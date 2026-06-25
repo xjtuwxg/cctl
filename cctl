@@ -12,7 +12,7 @@ SSH_OPTIONS=()
 usage() {
   cat <<'EOF'
 Usage:
-  ./ccctl [global options] <command> [command options]
+  ./cctl [global options] <command> [command options]
 
 Global options:
   -H, --host HOST             Instance IP or hostname, for example 192.5.86.156
@@ -33,11 +33,11 @@ Commands:
   run -- COMMAND              Run a command on the instance
 
 Examples:
-  ./ccctl -H 192.5.86.156 provision-user --user llamacpp --pubkey ~/.ssh/id_ed25519.pub
-  ./ccctl -H 192.5.86.156 sudo-test --user llamacpp
-  ./ccctl -H 192.5.86.157 -u xiaoguang gpu-info
-  ./ccctl -H 192.5.86.156 gpu-info
-  ./ccctl -H 192.5.86.156 run -- whoami
+  ./cctl -H 192.5.86.156 provision-user --user llamacpp --pubkey ~/.ssh/id_ed25519.pub
+  ./cctl -H 192.5.86.156 sudo-test --user llamacpp
+  ./cctl -H 192.5.86.157 -u xiaoguang gpu-info
+  ./cctl -H 192.5.86.156 gpu-info
+  ./cctl -H 192.5.86.156 run -- whoami
 EOF
 }
 
@@ -188,7 +188,7 @@ cmd_provision_user() {
       -h|--help)
         cat <<'EOF'
 Usage:
-  ./ccctl -H HOST provision-user --user USER --pubkey KEY_OR_PATH [options]
+  ./cctl -H HOST provision-user --user USER --pubkey KEY_OR_PATH [options]
 
 Options:
   --user USER                 New or existing Linux user to configure
@@ -318,7 +318,7 @@ cmd_add_key() {
       -h|--help)
         cat <<'EOF'
 Usage:
-  ./ccctl -H HOST add-key --user USER --pubkey KEY_OR_PATH
+  ./cctl -H HOST add-key --user USER --pubkey KEY_OR_PATH
 EOF
         return 0
         ;;
@@ -385,7 +385,7 @@ cmd_gpu_info() {
   if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     cat <<'EOF'
 Usage:
-  ./ccctl -H HOST gpu-info
+  ./cctl -H HOST gpu-info
 
 Checks:
   - GPU-like PCI devices

@@ -1,6 +1,6 @@
-# Chameleon Cloud Control
+# Chameleon Control
 
-`ccctl` is a local helper for managing a Chameleon Cloud instance over SSH.
+`cctl` is a local helper for managing a Chameleon Cloud instance over SSH.
 
 The initial workflow is:
 
@@ -15,13 +15,13 @@ The initial workflow is:
 Make the script executable:
 
 ```sh
-chmod +x ./ccctl
+chmod +x ./cctl
 ```
 
 Provision a user:
 
 ```sh
-./ccctl -H 192.5.86.156 provision-user \
+./cctl -H 192.5.86.156 provision-user \
   --user llamacpp \
   --pubkey ~/.ssh/id_ed25519.pub
 ```
@@ -35,7 +35,7 @@ ssh llamacpp@192.5.86.156
 Verify sudo access:
 
 ```sh
-./ccctl -H 192.5.86.156 sudo-test --user llamacpp
+./cctl -H 192.5.86.156 sudo-test --user llamacpp
 ```
 
 ## Common Commands
@@ -43,19 +43,19 @@ Verify sudo access:
 Show basic instance status:
 
 ```sh
-./ccctl -H 192.5.86.156 status
+./cctl -H 192.5.86.156 status
 ```
 
 Check GPU hardware, NVIDIA driver state, CUDA toolkit/libraries, Python GPU packages, and container GPU runtime:
 
 ```sh
-./ccctl -H 192.5.86.157 -u xiaoguang gpu-info
+./cctl -H 192.5.86.157 -u xiaoguang gpu-info
 ```
 
 Add another public key to an existing user:
 
 ```sh
-./ccctl -H 192.5.86.156 add-key \
+./cctl -H 192.5.86.156 add-key \
   --user llamacpp \
   --pubkey ~/.ssh/work_key.pub
 ```
@@ -63,13 +63,13 @@ Add another public key to an existing user:
 Run a remote command as the login user:
 
 ```sh
-./ccctl -H 192.5.86.156 run -- whoami
+./cctl -H 192.5.86.156 run -- whoami
 ```
 
 Use a private key and an explicit login user:
 
 ```sh
-./ccctl -H 192.5.86.156 \
+./cctl -H 192.5.86.156 \
   -u cc \
   --identity-file ~/.ssh/chameleon_key \
   provision-user --user llamacpp --pubkey ~/.ssh/id_ed25519.pub
@@ -80,20 +80,20 @@ Use a private key and an explicit login user:
 Prompt interactively, the default:
 
 ```sh
-./ccctl -H 192.5.86.156 provision-user --user llamacpp --pubkey ~/.ssh/id_ed25519.pub
+./cctl -H 192.5.86.156 provision-user --user llamacpp --pubkey ~/.ssh/id_ed25519.pub
 ```
 
 Read from stdin:
 
 ```sh
-printf '%s\n' 'temporary-password' | ./ccctl -H 192.5.86.156 \
+printf '%s\n' 'temporary-password' | ./cctl -H 192.5.86.156 \
   provision-user --user llamacpp --pubkey ~/.ssh/id_ed25519.pub --password-stdin
 ```
 
 Skip password changes and only configure SSH access:
 
 ```sh
-./ccctl -H 192.5.86.156 provision-user \
+./cctl -H 192.5.86.156 provision-user \
   --user llamacpp \
   --pubkey ~/.ssh/id_ed25519.pub \
   --no-password
@@ -102,7 +102,7 @@ Skip password changes and only configure SSH access:
 Force the user to change the password at first password login:
 
 ```sh
-./ccctl -H 192.5.86.156 provision-user \
+./cctl -H 192.5.86.156 provision-user \
   --user llamacpp \
   --pubkey ~/.ssh/id_ed25519.pub \
   --force-password-change
