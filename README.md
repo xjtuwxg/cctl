@@ -21,7 +21,7 @@ chmod +x ./ccctl
 Provision a user:
 
 ```sh
-./ccctl --host 192.5.86.156 provision-user \
+./ccctl -H 192.5.86.156 provision-user \
   --user llamacpp \
   --pubkey ~/.ssh/id_ed25519.pub
 ```
@@ -35,7 +35,7 @@ ssh llamacpp@192.5.86.156
 Verify sudo access:
 
 ```sh
-./ccctl --host 192.5.86.156 sudo-test --user llamacpp
+./ccctl -H 192.5.86.156 sudo-test --user llamacpp
 ```
 
 ## Common Commands
@@ -43,13 +43,19 @@ Verify sudo access:
 Show basic instance status:
 
 ```sh
-./ccctl --host 192.5.86.156 status
+./ccctl -H 192.5.86.156 status
+```
+
+Check GPU hardware, NVIDIA driver state, CUDA toolkit/libraries, Python GPU packages, and container GPU runtime:
+
+```sh
+./ccctl -H 192.5.86.157 -u xiaoguang gpu-info
 ```
 
 Add another public key to an existing user:
 
 ```sh
-./ccctl --host 192.5.86.156 add-key \
+./ccctl -H 192.5.86.156 add-key \
   --user llamacpp \
   --pubkey ~/.ssh/work_key.pub
 ```
@@ -57,13 +63,14 @@ Add another public key to an existing user:
 Run a remote command as the login user:
 
 ```sh
-./ccctl --host 192.5.86.156 run -- whoami
+./ccctl -H 192.5.86.156 run -- whoami
 ```
 
-Use a private key for the original `cc` login:
+Use a private key and an explicit login user:
 
 ```sh
-./ccctl --host 192.5.86.156 \
+./ccctl -H 192.5.86.156 \
+  -u cc \
   --identity-file ~/.ssh/chameleon_key \
   provision-user --user llamacpp --pubkey ~/.ssh/id_ed25519.pub
 ```
@@ -73,20 +80,20 @@ Use a private key for the original `cc` login:
 Prompt interactively, the default:
 
 ```sh
-./ccctl --host 192.5.86.156 provision-user --user llamacpp --pubkey ~/.ssh/id_ed25519.pub
+./ccctl -H 192.5.86.156 provision-user --user llamacpp --pubkey ~/.ssh/id_ed25519.pub
 ```
 
 Read from stdin:
 
 ```sh
-printf '%s\n' 'temporary-password' | ./ccctl --host 192.5.86.156 \
+printf '%s\n' 'temporary-password' | ./ccctl -H 192.5.86.156 \
   provision-user --user llamacpp --pubkey ~/.ssh/id_ed25519.pub --password-stdin
 ```
 
 Skip password changes and only configure SSH access:
 
 ```sh
-./ccctl --host 192.5.86.156 provision-user \
+./ccctl -H 192.5.86.156 provision-user \
   --user llamacpp \
   --pubkey ~/.ssh/id_ed25519.pub \
   --no-password
@@ -95,7 +102,7 @@ Skip password changes and only configure SSH access:
 Force the user to change the password at first password login:
 
 ```sh
-./ccctl --host 192.5.86.156 provision-user \
+./ccctl -H 192.5.86.156 provision-user \
   --user llamacpp \
   --pubkey ~/.ssh/id_ed25519.pub \
   --force-password-change
@@ -103,7 +110,8 @@ Force the user to change the password at first password login:
 
 ## Notes
 
-- The remote login user defaults to `cc`.
+- The remote login user defaults to your local username. Use `-u USER` or `--user USER` to override it; `--login-user USER` is kept as a compatibility alias.
 - The script uses `sudo` remotely, so `cc` must be able to run sudo.
 - The remote sudo group is detected as `sudo` first and `wheel` second.
 - Public keys may be passed as a path or as a literal OpenSSH public key string.
+- `gpu-info` is read-only and does not require sudo. It prints a compact summary; some checks may report unavailable if tools such as `lspci`, `nvcc`, Docker, or Python packages are not installed.

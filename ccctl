@@ -3,7 +3,7 @@ set -euo pipefail
 
 PROGRAM="$(basename "$0")"
 HOST=""
-LOGIN_USER="cc"
+LOGIN_USER="${USER:-}"
 PORT="22"
 IDENTITY_FILE=""
 YES="0"
@@ -12,11 +12,12 @@ SSH_OPTIONS=()
 usage() {
   cat <<'EOF'
 Usage:
-  ccctl [global options] <command> [command options]
+  ./ccctl [global options] <command> [command options]
 
 Global options:
-  --host HOST                 Instance IP or hostname, for example 192.5.86.156
-  --login-user USER           Existing SSH user with sudo access (default: cc)
+  -H, --host HOST             Instance IP or hostname, for example 192.5.86.156
+  -u, --user USER             Existing SSH login user (default: local username)
+  --login-user USER           Alias for --user
   --port PORT                 SSH port (default: 22)
   --identity-file PATH        SSH private key for the login user
   --ssh-option OPTION         Extra ssh option, can be repeated
@@ -27,13 +28,16 @@ Commands:
   provision-user              Create/update a user, install SSH key, add sudo
   add-key                     Add another public key to an existing user
   sudo-test                   Verify the target user can run sudo
+  gpu-info                    Check GPUs, NVIDIA driver, CUDA, and runtimes
   status                      Show basic instance status
   run -- COMMAND              Run a command on the instance
 
 Examples:
-  ccctl --host 192.5.86.156 provision-user --user llamacpp --pubkey ~/.ssh/id_ed25519.pub
-  ccctl --host 192.5.86.156 sudo-test --user llamacpp
-  ccctl --host 192.5.86.156 run -- whoami
+  ./ccctl -H 192.5.86.156 provision-user --user llamacpp --pubkey ~/.ssh/id_ed25519.pub
+  ./ccctl -H 192.5.86.156 sudo-test --user llamacpp
+  ./ccctl -H 192.5.86.157 -u xiaoguang gpu-info
+  ./ccctl -H 192.5.86.156 gpu-info
+  ./ccctl -H 192.5.86.156 run -- whoami
 EOF
 }
 
@@ -59,6 +63,10 @@ confirm() {
 
 require_host() {
   [[ -n "$HOST" ]] || die "missing --host"
+}
+
+require_login_user() {
+  [[ -n "$LOGIN_USER" ]] || die "missing --user and local USER is not set"
 }
 
 validate_username() {
@@ -101,6 +109,7 @@ ssh_base_args() {
 }
 
 remote_target() {
+  require_login_user
   printf "%s@%s" "$LOGIN_USER" "$HOST"
 }
 
@@ -120,6 +129,15 @@ send_remote_script() {
     args+=("$arg")
   done < <(ssh_base_args)
   ssh "${args[@]}" "$(remote_target)" "sudo bash -s"
+}
+
+send_remote_user_script() {
+  require_host
+  local args=()
+  while IFS= read -r -d '' arg; do
+    args+=("$arg")
+  done < <(ssh_base_args)
+  ssh "${args[@]}" "$(remote_target)" "bash -s"
 }
 
 prompt_password() {
@@ -170,7 +188,7 @@ cmd_provision_user() {
       -h|--help)
         cat <<'EOF'
 Usage:
-  ccctl --host HOST provision-user --user USER --pubkey KEY_OR_PATH [options]
+  ./ccctl -H HOST provision-user --user USER --pubkey KEY_OR_PATH [options]
 
 Options:
   --user USER                 New or existing Linux user to configure
@@ -300,7 +318,7 @@ cmd_add_key() {
       -h|--help)
         cat <<'EOF'
 Usage:
-  ccctl --host HOST add-key --user USER --pubkey KEY_OR_PATH
+  ./ccctl -H HOST add-key --user USER --pubkey KEY_OR_PATH
 EOF
         return 0
         ;;
@@ -363,6 +381,171 @@ cmd_status() {
   run_ssh "hostname; uptime; uname -a; df -h /; free -h 2>/dev/null || true"
 }
 
+cmd_gpu_info() {
+  if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    cat <<'EOF'
+Usage:
+  ./ccctl -H HOST gpu-info
+
+Checks:
+  - GPU-like PCI devices
+  - NVIDIA driver and nvidia-smi
+  - NVIDIA kernel modules
+  - CUDA toolkit and common CUDA libraries
+  - Python packages with GPU support checks
+  - Docker/NVIDIA container runtime presence
+EOF
+    return 0
+  fi
+  [[ "$#" -eq 0 ]] || die "gpu-info does not accept arguments"
+  cat <<'REMOTE' | send_remote_user_script
+set -u
+
+section() {
+  printf '\n## %s\n' "$1"
+}
+
+have() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+section "Host"
+printf 'hostname: %s\n' "$(hostname 2>/dev/null || printf unknown)"
+printf 'kernel:   %s\n' "$(uname -r 2>/dev/null || printf unknown)"
+if have lsb_release; then
+  lsb_release -ds 2>/dev/null | sed 's/^/os:       /'
+elif [[ -r /etc/os-release ]]; then
+  . /etc/os-release
+  printf 'os:       %s\n' "${PRETTY_NAME:-unknown}"
+fi
+
+section "GPU Hardware"
+if have lspci; then
+  gpu_lines="$(lspci -nn 2>/dev/null | grep -Ei '^[[:xdigit:]:.]+ (VGA compatible controller|3D controller|Display controller):|NVIDIA Corporation' || true)"
+  if [[ -n "$gpu_lines" ]]; then
+    printf '%s\n' "$gpu_lines"
+  else
+    printf 'no GPU-like PCI devices found by lspci\n'
+  fi
+else
+  printf 'lspci is not installed\n'
+fi
+
+section "NVIDIA Driver"
+if have nvidia-smi; then
+  query_output="$(nvidia-smi --query-gpu=index,name,uuid,driver_version,memory.total,memory.used,temperature.gpu,power.draw --format=csv,noheader,nounits 2>&1)"
+  query_status="$?"
+  if [[ "$query_status" -eq 0 ]]; then
+    printf '%s\n' "$query_output" \
+      | awk -F', ' 'BEGIN { print "index | name | uuid | driver | mem MiB | used MiB | temp C | power W" } { print $1 " | " $2 " | " $3 " | " $4 " | " $5 " | " $6 " | " $7 " | " $8 }'
+  else
+    printf 'nvidia-smi query failed:\n%s\n' "$query_output"
+  fi
+else
+  printf 'nvidia-smi not found\n'
+fi
+
+section "NVIDIA Kernel Modules"
+if have lsmod; then
+  lsmod | grep -E '^nvidia' || printf 'no loaded nvidia kernel modules found\n'
+else
+  printf 'lsmod is not installed\n'
+fi
+
+if [[ -r /proc/driver/nvidia/version ]]; then
+  printf '\n/proc/driver/nvidia/version:\n'
+  cat /proc/driver/nvidia/version
+fi
+
+section "CUDA Toolkit"
+if have nvcc; then
+  nvcc --version 2>&1
+else
+  printf 'nvcc not found in PATH\n'
+fi
+
+for cuda_dir in /usr/local/cuda /usr/local/cuda-*; do
+  if [[ -e "$cuda_dir" ]]; then
+    printf 'cuda path: %s\n' "$cuda_dir"
+    if [[ -r "$cuda_dir/version.json" ]]; then
+      grep -E '"cuda"|"version"' "$cuda_dir/version.json" 2>/dev/null | head -20 || true
+    elif [[ -r "$cuda_dir/version.txt" ]]; then
+      cat "$cuda_dir/version.txt"
+    fi
+  fi
+done
+
+section "CUDA Libraries"
+if have ldconfig; then
+  ldconfig -p 2>/dev/null | grep -E 'libcuda|libcudart|libcublas|libcudnn|libnccl' || printf 'no common CUDA libraries found by ldconfig\n'
+else
+  printf 'ldconfig is not available\n'
+fi
+
+section "Python GPU Packages"
+if have python3; then
+  python3 - <<'PY' 2>&1
+import importlib.util
+
+packages = ["torch", "tensorflow", "jax", "cupy"]
+for name in packages:
+    spec = importlib.util.find_spec(name)
+    if spec is None:
+        print(f"{name}: not installed")
+        continue
+    try:
+        module = __import__(name)
+        version = getattr(module, "__version__", "unknown")
+        print(f"{name}: {version}")
+        if name == "torch":
+            print(f"  cuda available: {module.cuda.is_available()}")
+            print(f"  cuda version:    {module.version.cuda}")
+            print(f"  device count:    {module.cuda.device_count()}")
+            for index in range(module.cuda.device_count()):
+                print(f"  device {index}:      {module.cuda.get_device_name(index)}")
+        elif name == "tensorflow":
+            print(f"  gpu devices:     {module.config.list_physical_devices('GPU')}")
+        elif name == "jax":
+            print(f"  devices:         {module.devices()}")
+        elif name == "cupy":
+            print(f"  cuda runtime:    {module.cuda.runtime.runtimeGetVersion()}")
+            print(f"  device count:    {module.cuda.runtime.getDeviceCount()}")
+    except Exception as exc:
+        print(f"{name}: installed but check failed: {exc}")
+PY
+else
+  printf 'python3 is not installed\n'
+fi
+
+section "Container GPU Runtime"
+if have docker; then
+  docker info 2>/dev/null | grep -Ei 'runtimes|nvidia|default runtime' || printf 'docker found, but no NVIDIA runtime lines found or docker is inaccessible\n'
+else
+  printf 'docker not found\n'
+fi
+
+if have nvidia-container-cli; then
+  nvidia-container-cli --version 2>&1
+else
+  printf 'nvidia-container-cli not found\n'
+fi
+
+section "Summary"
+if have nvidia-smi && nvidia-smi -L >/dev/null 2>&1; then
+  gpu_count="$(nvidia-smi -L 2>/dev/null | wc -l | tr -d ' ')"
+  printf 'NVIDIA GPUs detected: %s\n' "$gpu_count"
+else
+  printf 'NVIDIA GPUs detected: no, or driver is not working\n'
+fi
+
+if have nvcc; then
+  printf 'CUDA toolkit: yes\n'
+else
+  printf 'CUDA toolkit: not found in PATH\n'
+fi
+REMOTE
+}
+
 cmd_run() {
   [[ "${1:-}" == "--" ]] && shift
   (($#)) || die "run requires a command"
@@ -372,11 +555,11 @@ cmd_run() {
 parse_global_options() {
   while (($#)); do
     case "$1" in
-      --host)
+      -H|--host)
         HOST="${2:-}"
         shift 2
         ;;
-      --login-user)
+      -u|--user|--login-user)
         LOGIN_USER="${2:-}"
         shift 2
         ;;
@@ -400,7 +583,7 @@ parse_global_options() {
         usage
         exit 0
         ;;
-      provision-user|add-key|sudo-test|status|run)
+      provision-user|add-key|sudo-test|gpu-info|status|run)
         COMMAND="$1"
         shift
         COMMAND_ARGS=("$@")
@@ -428,6 +611,9 @@ case "$COMMAND" in
     ;;
   sudo-test)
     cmd_sudo_test "${COMMAND_ARGS[@]}"
+    ;;
+  gpu-info)
+    cmd_gpu_info "${COMMAND_ARGS[@]}"
     ;;
   status)
     cmd_status "${COMMAND_ARGS[@]}"
