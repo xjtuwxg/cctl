@@ -1,0 +1,441 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROGRAM="$(basename "$0")"
+HOST=""
+LOGIN_USER="cc"
+PORT="22"
+IDENTITY_FILE=""
+YES="0"
+SSH_OPTIONS=()
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ccctl [global options] <command> [command options]
+
+Global options:
+  --host HOST                 Instance IP or hostname, for example 192.5.86.156
+  --login-user USER           Existing SSH user with sudo access (default: cc)
+  --port PORT                 SSH port (default: 22)
+  --identity-file PATH        SSH private key for the login user
+  --ssh-option OPTION         Extra ssh option, can be repeated
+  -y, --yes                   Do not ask for confirmation
+  -h, --help                  Show help
+
+Commands:
+  provision-user              Create/update a user, install SSH key, add sudo
+  add-key                     Add another public key to an existing user
+  sudo-test                   Verify the target user can run sudo
+  status                      Show basic instance status
+  run -- COMMAND              Run a command on the instance
+
+Examples:
+  ccctl --host 192.5.86.156 provision-user --user llamacpp --pubkey ~/.ssh/id_ed25519.pub
+  ccctl --host 192.5.86.156 sudo-test --user llamacpp
+  ccctl --host 192.5.86.156 run -- whoami
+EOF
+}
+
+die() {
+  echo "error: $*" >&2
+  exit 1
+}
+
+info() {
+  echo "==> $*" >&2
+}
+
+confirm() {
+  local prompt="$1"
+  if [[ "$YES" == "1" ]]; then
+    return 0
+  fi
+
+  local answer
+  read -r -p "$prompt [y/N] " answer
+  [[ "$answer" == "y" || "$answer" == "Y" || "$answer" == "yes" || "$answer" == "YES" ]]
+}
+
+require_host() {
+  [[ -n "$HOST" ]] || die "missing --host"
+}
+
+validate_username() {
+  local user="$1"
+  [[ "$user" =~ ^[a-z_][a-z0-9_-]*[$]?$ ]] || die "invalid Linux username: $user"
+}
+
+shell_quote() {
+  printf "'"
+  printf "%s" "$1" | sed "s/'/'\\\\''/g"
+  printf "'"
+}
+
+read_public_key() {
+  local value="$1"
+  if [[ -f "$value" ]]; then
+    value="$(tr -d '\r\n' < "$value")"
+  fi
+
+  [[ -n "$value" ]] || die "public key is empty"
+  case "$value" in
+    ssh-rsa\ *|ssh-ed25519\ *|ecdsa-sha2-*\ *|sk-ssh-ed25519@openssh.com\ *|sk-ecdsa-sha2-nistp256@openssh.com\ *)
+      printf "%s" "$value"
+      ;;
+    *)
+      die "public key must be a valid OpenSSH public key string or a path to one"
+      ;;
+  esac
+}
+
+ssh_base_args() {
+  local args=(-p "$PORT" -o BatchMode=no -o StrictHostKeyChecking=accept-new)
+  if [[ -n "$IDENTITY_FILE" ]]; then
+    args+=(-i "$IDENTITY_FILE")
+  fi
+  if ((${#SSH_OPTIONS[@]})); then
+    args+=("${SSH_OPTIONS[@]}")
+  fi
+  printf '%s\0' "${args[@]}"
+}
+
+remote_target() {
+  printf "%s@%s" "$LOGIN_USER" "$HOST"
+}
+
+run_ssh() {
+  require_host
+  local args=()
+  while IFS= read -r -d '' arg; do
+    args+=("$arg")
+  done < <(ssh_base_args)
+  ssh "${args[@]}" "$(remote_target)" "$@"
+}
+
+send_remote_script() {
+  require_host
+  local args=()
+  while IFS= read -r -d '' arg; do
+    args+=("$arg")
+  done < <(ssh_base_args)
+  ssh "${args[@]}" "$(remote_target)" "sudo bash -s"
+}
+
+prompt_password() {
+  local first second
+  read -r -s -p "New password: " first
+  echo >&2
+  read -r -s -p "Confirm password: " second
+  echo >&2
+  [[ "$first" == "$second" ]] || die "passwords do not match"
+  [[ -n "$first" ]] || die "password cannot be empty"
+  printf "%s" "$first"
+}
+
+cmd_provision_user() {
+  local new_user=""
+  local pubkey_arg=""
+  local password=""
+  local password_mode="prompt"
+  local force_password_change="0"
+
+  while (($#)); do
+    case "$1" in
+      --user)
+        new_user="${2:-}"
+        shift 2
+        ;;
+      --pubkey)
+        pubkey_arg="${2:-}"
+        shift 2
+        ;;
+      --password)
+        password="${2:-}"
+        password_mode="value"
+        shift 2
+        ;;
+      --password-stdin)
+        password_mode="stdin"
+        shift
+        ;;
+      --no-password)
+        password_mode="none"
+        shift
+        ;;
+      --force-password-change)
+        force_password_change="1"
+        shift
+        ;;
+      -h|--help)
+        cat <<'EOF'
+Usage:
+  ccctl --host HOST provision-user --user USER --pubkey KEY_OR_PATH [options]
+
+Options:
+  --user USER                 New or existing Linux user to configure
+  --pubkey KEY_OR_PATH        Public key string or path, usually ~/.ssh/id_ed25519.pub
+  --password PASSWORD         Set password from argument (less private; avoid shell history)
+  --password-stdin            Read password from stdin
+  --no-password               Do not set or change password
+  --force-password-change     Require password change at next login
+EOF
+        return 0
+        ;;
+      *)
+        die "unknown provision-user option: $1"
+        ;;
+    esac
+  done
+
+  require_host
+  [[ -n "$new_user" ]] || die "missing --user"
+  [[ -n "$pubkey_arg" ]] || die "missing --pubkey"
+  validate_username "$new_user"
+
+  local pubkey
+  pubkey="$(read_public_key "$pubkey_arg")"
+
+  case "$password_mode" in
+    prompt)
+      password="$(prompt_password)"
+      ;;
+    stdin)
+      IFS= read -r password || true
+      [[ -n "$password" ]] || die "password read from stdin is empty"
+      ;;
+    value)
+      [[ -n "$password" ]] || die "--password cannot be empty"
+      ;;
+    none)
+      password=""
+      ;;
+  esac
+
+  echo "Target: $(remote_target)"
+  echo "User:   $new_user"
+  echo "Key:    ${pubkey%% *} ${pubkey##* }"
+  if ! confirm "Provision this user on $HOST?"; then
+    die "cancelled"
+  fi
+
+  info "connecting to $HOST as $LOGIN_USER"
+  {
+    printf 'NEW_USER=%s\n' "$(shell_quote "$new_user")"
+    printf 'PUBLIC_KEY=%s\n' "$(shell_quote "$pubkey")"
+    printf 'PASSWORD=%s\n' "$(shell_quote "$password")"
+    printf 'FORCE_PASSWORD_CHANGE=%s\n' "$(shell_quote "$force_password_change")"
+    cat <<'REMOTE'
+set -euo pipefail
+
+if [[ "$(id -u)" -ne 0 ]]; then
+  echo "remote error: this script must run as root" >&2
+  exit 1
+fi
+
+if getent passwd "$NEW_USER" >/dev/null; then
+  echo "remote: user $NEW_USER already exists"
+else
+  useradd -m -s /bin/bash "$NEW_USER"
+  echo "remote: created user $NEW_USER"
+fi
+
+if getent group sudo >/dev/null; then
+  usermod -aG sudo "$NEW_USER"
+  echo "remote: added $NEW_USER to sudo"
+elif getent group wheel >/dev/null; then
+  usermod -aG wheel "$NEW_USER"
+  echo "remote: added $NEW_USER to wheel"
+else
+  echo "remote error: neither sudo nor wheel group exists" >&2
+  exit 1
+fi
+
+home_dir="$(getent passwd "$NEW_USER" | cut -d: -f6)"
+install -d -m 700 -o "$NEW_USER" -g "$NEW_USER" "$home_dir/.ssh"
+authorized_keys="$home_dir/.ssh/authorized_keys"
+touch "$authorized_keys"
+chown "$NEW_USER:$NEW_USER" "$authorized_keys"
+chmod 600 "$authorized_keys"
+
+if grep -qxF "$PUBLIC_KEY" "$authorized_keys"; then
+  echo "remote: public key already present"
+else
+  printf '%s\n' "$PUBLIC_KEY" >> "$authorized_keys"
+  echo "remote: public key added"
+fi
+
+if [[ -n "$PASSWORD" ]]; then
+  printf '%s:%s\n' "$NEW_USER" "$PASSWORD" | chpasswd
+  echo "remote: password updated"
+  if [[ "$FORCE_PASSWORD_CHANGE" == "1" ]]; then
+    chage -d 0 "$NEW_USER"
+    echo "remote: password change required at next login"
+  fi
+else
+  echo "remote: password unchanged"
+fi
+
+echo "remote: done"
+REMOTE
+  } | send_remote_script
+
+  info "try: ssh ${new_user}@${HOST}"
+}
+
+cmd_add_key() {
+  local target_user=""
+  local pubkey_arg=""
+
+  while (($#)); do
+    case "$1" in
+      --user)
+        target_user="${2:-}"
+        shift 2
+        ;;
+      --pubkey)
+        pubkey_arg="${2:-}"
+        shift 2
+        ;;
+      -h|--help)
+        cat <<'EOF'
+Usage:
+  ccctl --host HOST add-key --user USER --pubkey KEY_OR_PATH
+EOF
+        return 0
+        ;;
+      *)
+        die "unknown add-key option: $1"
+        ;;
+    esac
+  done
+
+  require_host
+  [[ -n "$target_user" ]] || die "missing --user"
+  [[ -n "$pubkey_arg" ]] || die "missing --pubkey"
+  validate_username "$target_user"
+
+  local pubkey
+  pubkey="$(read_public_key "$pubkey_arg")"
+
+  {
+    printf 'TARGET_USER=%s\n' "$(shell_quote "$target_user")"
+    printf 'PUBLIC_KEY=%s\n' "$(shell_quote "$pubkey")"
+    cat <<'REMOTE'
+set -euo pipefail
+getent passwd "$TARGET_USER" >/dev/null || { echo "remote error: user does not exist: $TARGET_USER" >&2; exit 1; }
+home_dir="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+install -d -m 700 -o "$TARGET_USER" -g "$TARGET_USER" "$home_dir/.ssh"
+authorized_keys="$home_dir/.ssh/authorized_keys"
+touch "$authorized_keys"
+chown "$TARGET_USER:$TARGET_USER" "$authorized_keys"
+chmod 600 "$authorized_keys"
+if grep -qxF "$PUBLIC_KEY" "$authorized_keys"; then
+  echo "remote: public key already present"
+else
+  printf '%s\n' "$PUBLIC_KEY" >> "$authorized_keys"
+  echo "remote: public key added"
+fi
+REMOTE
+  } | send_remote_script
+}
+
+cmd_sudo_test() {
+  local target_user=""
+  while (($#)); do
+    case "$1" in
+      --user)
+        target_user="${2:-}"
+        shift 2
+        ;;
+      *)
+        die "unknown sudo-test option: $1"
+        ;;
+    esac
+  done
+  [[ -n "$target_user" ]] || die "missing --user"
+  validate_username "$target_user"
+  run_ssh "sudo -l -U $(shell_quote "$target_user") && id $(shell_quote "$target_user")"
+}
+
+cmd_status() {
+  [[ "$#" -eq 0 ]] || die "status does not accept arguments"
+  run_ssh "hostname; uptime; uname -a; df -h /; free -h 2>/dev/null || true"
+}
+
+cmd_run() {
+  [[ "${1:-}" == "--" ]] && shift
+  (($#)) || die "run requires a command"
+  run_ssh "$@"
+}
+
+parse_global_options() {
+  while (($#)); do
+    case "$1" in
+      --host)
+        HOST="${2:-}"
+        shift 2
+        ;;
+      --login-user)
+        LOGIN_USER="${2:-}"
+        shift 2
+        ;;
+      --port)
+        PORT="${2:-}"
+        shift 2
+        ;;
+      --identity-file)
+        IDENTITY_FILE="${2:-}"
+        shift 2
+        ;;
+      --ssh-option)
+        SSH_OPTIONS+=("-o" "${2:-}")
+        shift 2
+        ;;
+      -y|--yes)
+        YES="1"
+        shift
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      provision-user|add-key|sudo-test|status|run)
+        COMMAND="$1"
+        shift
+        COMMAND_ARGS=("$@")
+        return 0
+        ;;
+      *)
+        die "unknown option or command: $1"
+        ;;
+    esac
+  done
+  usage
+  exit 1
+}
+
+COMMAND=""
+COMMAND_ARGS=()
+parse_global_options "$@"
+
+case "$COMMAND" in
+  provision-user)
+    cmd_provision_user "${COMMAND_ARGS[@]}"
+    ;;
+  add-key)
+    cmd_add_key "${COMMAND_ARGS[@]}"
+    ;;
+  sudo-test)
+    cmd_sudo_test "${COMMAND_ARGS[@]}"
+    ;;
+  status)
+    cmd_status "${COMMAND_ARGS[@]}"
+    ;;
+  run)
+    cmd_run "${COMMAND_ARGS[@]}"
+    ;;
+  *)
+    die "unknown command: $COMMAND"
+    ;;
+esac
