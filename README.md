@@ -21,7 +21,7 @@ chmod +x ./cctl
 Provision a user:
 
 ```sh
-./cctl -H 192.5.86.156 provision-user \
+./cctl cc@192.5.86.156 adduser \
   --user llamacpp \
   --pubkey ~/.ssh/id_ed25519.pub
 ```
@@ -35,7 +35,7 @@ ssh llamacpp@192.5.86.156
 Verify sudo access:
 
 ```sh
-./cctl -H 192.5.86.156 sudo-test --user llamacpp
+./cctl llamacpp@192.5.86.156 sudo
 ```
 
 ## Common Commands
@@ -43,57 +43,78 @@ Verify sudo access:
 Show basic instance status:
 
 ```sh
-./cctl -H 192.5.86.156 status
+./cctl 192.5.86.156 status
 ```
 
 Check GPU hardware, NVIDIA driver state, CUDA toolkit/libraries, Python GPU packages, and container GPU runtime:
 
 ```sh
-./cctl -H 192.5.86.157 -u xiaoguang gpu-info
+./cctl xiaoguang@192.5.86.157 gpu
 ```
 
 Add another public key to an existing user:
 
 ```sh
-./cctl -H 192.5.86.156 add-key \
-  --user llamacpp \
+./cctl llamacpp@192.5.86.156 addkey \
   --pubkey ~/.ssh/work_key.pub
+```
+
+You can also paste a public key directly:
+
+```sh
+./cctl llamacpp@192.5.86.156 addkey \
+  --pubkey 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... xiaoguang@laptop'
 ```
 
 Run a remote command as the login user:
 
 ```sh
-./cctl -H 192.5.86.156 run -- whoami
+./cctl 192.5.86.156 run -- whoami
 ```
 
 Use a private key and an explicit login user:
 
 ```sh
-./cctl -H 192.5.86.156 \
-  -u cc \
+./cctl cc@192.5.86.156 \
   --identity-file ~/.ssh/chameleon_key \
-  provision-user --user llamacpp --pubkey ~/.ssh/id_ed25519.pub
+  adduser --user llamacpp --pubkey ~/.ssh/id_ed25519.pub
 ```
+
+The `-u` option is still available if you prefer to keep the login user separate:
+
+```sh
+./cctl -u cc 192.5.86.156 \
+  --identity-file ~/.ssh/chameleon_key \
+  adduser --user llamacpp --pubkey ~/.ssh/id_ed25519.pub
+```
+
+If a reused instance IP reports `REMOTE HOST IDENTIFICATION HAS CHANGED`, remove the old SSH host key entry before connecting:
+
+```sh
+./cctl -R 192.5.87.31 gpu
+```
+
+Use `-y` with `-R` or `--replace-host-key` only when you already expect the instance behind that IP to have changed.
 
 ## Password Options
 
 Prompt interactively, the default:
 
 ```sh
-./cctl -H 192.5.86.156 provision-user --user llamacpp --pubkey ~/.ssh/id_ed25519.pub
+./cctl 192.5.86.156 adduser --user llamacpp --pubkey ~/.ssh/id_ed25519.pub
 ```
 
 Read from stdin:
 
 ```sh
-printf '%s\n' 'temporary-password' | ./cctl -H 192.5.86.156 \
-  provision-user --user llamacpp --pubkey ~/.ssh/id_ed25519.pub --password-stdin
+printf '%s\n' 'temporary-password' | ./cctl 192.5.86.156 \
+  adduser --user llamacpp --pubkey ~/.ssh/id_ed25519.pub --password-stdin
 ```
 
 Skip password changes and only configure SSH access:
 
 ```sh
-./cctl -H 192.5.86.156 provision-user \
+./cctl 192.5.86.156 adduser \
   --user llamacpp \
   --pubkey ~/.ssh/id_ed25519.pub \
   --no-password
@@ -102,7 +123,7 @@ Skip password changes and only configure SSH access:
 Force the user to change the password at first password login:
 
 ```sh
-./cctl -H 192.5.86.156 provision-user \
+./cctl 192.5.86.156 adduser \
   --user llamacpp \
   --pubkey ~/.ssh/id_ed25519.pub \
   --force-password-change
@@ -110,8 +131,9 @@ Force the user to change the password at first password login:
 
 ## Notes
 
-- The remote login user defaults to your local username. Use `-u USER` or `--user USER` to override it; `--login-user USER` is kept as a compatibility alias.
+- The remote login user defaults to your local username. Prefer `LOGIN_USER@HOST`; `-u USER` and `--user USER` are available as alternatives.
+- Older command names are still accepted as compatibility aliases: `init`, `key`, `provision-user`, `add-key`, `sudo-test`, and `gpu-info`.
 - The script uses `sudo` remotely, so `cc` must be able to run sudo.
 - The remote sudo group is detected as `sudo` first and `wheel` second.
 - Public keys may be passed as a path or as a literal OpenSSH public key string.
-- `gpu-info` is read-only and does not require sudo. It prints a compact summary; some checks may report unavailable if tools such as `lspci`, `nvcc`, Docker, or Python packages are not installed.
+- `gpu` is read-only and does not require sudo. It prints a compact summary; some checks may report unavailable if tools such as `lspci`, `nvcc`, Docker, or Python packages are not installed.

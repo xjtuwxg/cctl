@@ -7,37 +7,38 @@ LOGIN_USER="${USER:-}"
 PORT="22"
 IDENTITY_FILE=""
 YES="0"
+REPLACE_HOST_KEY="0"
 SSH_OPTIONS=()
 
 usage() {
   cat <<'EOF'
 Usage:
-  ./cctl [global options] <command> [command options]
+  ./cctl [global options] [LOGIN_USER@]HOST <command> [command options]
 
 Global options:
-  -H, --host HOST             Instance IP or hostname, for example 192.5.86.156
-  -u, --user USER             Existing SSH login user (default: local username)
-  --login-user USER           Alias for --user
-  --port PORT                 SSH port (default: 22)
+  -u, --user USER             Override SSH login user, alternative to USER@HOST
+  -p, --port PORT             SSH port (default: 22)
   --identity-file PATH        SSH private key for the login user
   --ssh-option OPTION         Extra ssh option, can be repeated
+  -R, --replace-host-key      Remove this host from known_hosts before connecting
   -y, --yes                   Do not ask for confirmation
   -h, --help                  Show help
 
 Commands:
-  provision-user              Create/update a user, install SSH key, add sudo
-  add-key                     Add another public key to an existing user
-  sudo-test                   Verify the target user can run sudo
-  gpu-info                    Check GPUs, NVIDIA driver, CUDA, and runtimes
+  adduser                     Create/update a user, install SSH key, add sudo
+  addkey                      Add another public key to an existing user
+  sudo                        Verify the target user can run sudo
+  gpu                         Check GPUs, NVIDIA driver, CUDA, and runtimes
   status                      Show basic instance status
   run -- COMMAND              Run a command on the instance
 
 Examples:
-  ./cctl -H 192.5.86.156 provision-user --user llamacpp --pubkey ~/.ssh/id_ed25519.pub
-  ./cctl -H 192.5.86.156 sudo-test --user llamacpp
-  ./cctl -H 192.5.86.157 -u xiaoguang gpu-info
-  ./cctl -H 192.5.86.156 gpu-info
-  ./cctl -H 192.5.86.156 run -- whoami
+  ./cctl cc@192.5.86.156 adduser --user llamacpp --pubkey ~/.ssh/id_ed25519.pub
+  ./cctl llamacpp@192.5.86.156 addkey --pubkey ~/.ssh/work_key.pub
+  ./cctl llamacpp@192.5.86.156 sudo
+  ./cctl xiaoguang@192.5.86.157 gpu
+  ./cctl 192.5.86.156 gpu
+  ./cctl 192.5.86.156 run -- whoami
 EOF
 }
 
@@ -62,11 +63,28 @@ confirm() {
 }
 
 require_host() {
-  [[ -n "$HOST" ]] || die "missing --host"
+  [[ -n "$HOST" ]] || die "missing host"
 }
 
 require_login_user() {
   [[ -n "$LOGIN_USER" ]] || die "missing --user and local USER is not set"
+}
+
+set_host_arg() {
+  local value="$1"
+  [[ -n "$value" ]] || die "host cannot be empty"
+
+  case "$value" in
+    *@*)
+      LOGIN_USER="${value%@*}"
+      HOST="${value#*@}"
+      [[ -n "$LOGIN_USER" ]] || die "login user in host cannot be empty"
+      [[ -n "$HOST" ]] || die "host cannot be empty"
+      ;;
+    *)
+      HOST="$value"
+      ;;
+  esac
 }
 
 validate_username() {
@@ -113,6 +131,23 @@ remote_target() {
   printf "%s@%s" "$LOGIN_USER" "$HOST"
 }
 
+replace_known_host() {
+  require_host
+  command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen is required for --replace-host-key"
+
+  local target="$HOST"
+  if [[ "$PORT" != "22" ]]; then
+    target="[$HOST]:$PORT"
+  fi
+
+  if ! confirm "Remove old SSH host key entry for ${target}?"; then
+    die "host key replacement cancelled"
+  fi
+
+  info "removing old SSH host key entry for ${target}"
+  ssh-keygen -R "$target" >/dev/null
+}
+
 run_ssh() {
   require_host
   local args=()
@@ -120,6 +155,15 @@ run_ssh() {
     args+=("$arg")
   done < <(ssh_base_args)
   ssh "${args[@]}" "$(remote_target)" "$@"
+}
+
+run_ssh_tty() {
+  require_host
+  local args=()
+  while IFS= read -r -d '' arg; do
+    args+=("$arg")
+  done < <(ssh_base_args)
+  ssh -tt "${args[@]}" "$(remote_target)" "$@"
 }
 
 send_remote_script() {
@@ -188,11 +232,11 @@ cmd_provision_user() {
       -h|--help)
         cat <<'EOF'
 Usage:
-  ./cctl -H HOST provision-user --user USER --pubkey KEY_OR_PATH [options]
+  ./cctl [global options] [LOGIN_USER@]HOST adduser --user USER --pubkey KEY_TEXT_OR_PATH [options]
 
 Options:
   --user USER                 New or existing Linux user to configure
-  --pubkey KEY_OR_PATH        Public key string or path, usually ~/.ssh/id_ed25519.pub
+  --pubkey KEY_TEXT_OR_PATH   Public key text in quotes, or a path such as ~/.ssh/id_ed25519.pub
   --password PASSWORD         Set password from argument (less private; avoid shell history)
   --password-stdin            Read password from stdin
   --no-password               Do not set or change password
@@ -201,7 +245,7 @@ EOF
         return 0
         ;;
       *)
-        die "unknown provision-user option: $1"
+        die "unknown adduser option: $1"
         ;;
     esac
   done
@@ -318,18 +362,25 @@ cmd_add_key() {
       -h|--help)
         cat <<'EOF'
 Usage:
-  ./cctl -H HOST add-key --user USER --pubkey KEY_OR_PATH
+  ./cctl [global options] [LOGIN_USER@]HOST addkey [--user USER] --pubkey KEY_TEXT_OR_PATH
+
+Options:
+  --user USER                 User to update (default: SSH login user)
+  --pubkey KEY_TEXT_OR_PATH   Public key text in quotes, or a path such as ~/.ssh/id_ed25519.pub
 EOF
         return 0
         ;;
       *)
-        die "unknown add-key option: $1"
+        die "unknown addkey option: $1"
         ;;
     esac
   done
 
   require_host
-  [[ -n "$target_user" ]] || die "missing --user"
+  require_login_user
+  if [[ -z "$target_user" ]]; then
+    target_user="$LOGIN_USER"
+  fi
   [[ -n "$pubkey_arg" ]] || die "missing --pubkey"
   validate_username "$target_user"
 
@@ -366,14 +417,31 @@ cmd_sudo_test() {
         target_user="${2:-}"
         shift 2
         ;;
+      -h|--help)
+        cat <<'EOF'
+Usage:
+  ./cctl [global options] [LOGIN_USER@]HOST sudo [--user USER]
+
+Options:
+  --user USER                 User to check (default: SSH login user)
+EOF
+        return 0
+        ;;
       *)
-        die "unknown sudo-test option: $1"
+        die "unknown sudo option: $1"
         ;;
     esac
   done
-  [[ -n "$target_user" ]] || die "missing --user"
+  require_login_user
+  if [[ -z "$target_user" ]]; then
+    target_user="$LOGIN_USER"
+  fi
   validate_username "$target_user"
-  run_ssh "sudo -l -U $(shell_quote "$target_user") && id $(shell_quote "$target_user")"
+  if [[ "$target_user" == "$LOGIN_USER" ]]; then
+    run_ssh_tty "sudo -l && id"
+  else
+    run_ssh_tty "sudo -l -U $(shell_quote "$target_user") && id $(shell_quote "$target_user")"
+  fi
 }
 
 cmd_status() {
@@ -385,7 +453,7 @@ cmd_gpu_info() {
   if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     cat <<'EOF'
 Usage:
-  ./cctl -H HOST gpu-info
+  ./cctl [global options] [LOGIN_USER@]HOST gpu
 
 Checks:
   - GPU-like PCI devices
@@ -397,7 +465,7 @@ Checks:
 EOF
     return 0
   fi
-  [[ "$#" -eq 0 ]] || die "gpu-info does not accept arguments"
+  [[ "$#" -eq 0 ]] || die "gpu does not accept arguments"
   cat <<'REMOTE' | send_remote_user_script
 set -u
 
@@ -555,15 +623,11 @@ cmd_run() {
 parse_global_options() {
   while (($#)); do
     case "$1" in
-      -H|--host)
-        HOST="${2:-}"
-        shift 2
-        ;;
-      -u|--user|--login-user)
+      -u|--user)
         LOGIN_USER="${2:-}"
         shift 2
         ;;
-      --port)
+      -p|--port)
         PORT="${2:-}"
         shift 2
         ;;
@@ -575,6 +639,10 @@ parse_global_options() {
         SSH_OPTIONS+=("-o" "${2:-}")
         shift 2
         ;;
+      -R|--replace-host-key)
+        REPLACE_HOST_KEY="1"
+        shift
+        ;;
       -y|--yes)
         YES="1"
         shift
@@ -583,14 +651,26 @@ parse_global_options() {
         usage
         exit 0
         ;;
-      provision-user|add-key|sudo-test|gpu-info|status|run)
+      adduser|addkey|init|key|sudo|gpu|status|run|provision-user|add-key|sudo-test|gpu-info)
         COMMAND="$1"
         shift
         COMMAND_ARGS=("$@")
         return 0
         ;;
+      --)
+        shift
+        (($#)) || die "missing host"
+        [[ -z "$HOST" ]] || die "unexpected argument after host: $1"
+        set_host_arg "$1"
+        shift
+        ;;
+      -*)
+        die "unknown option: $1"
+        ;;
       *)
-        die "unknown option or command: $1"
+        [[ -z "$HOST" ]] || die "unknown option or command: $1"
+        set_host_arg "$1"
+        shift
         ;;
     esac
   done
@@ -602,17 +682,21 @@ COMMAND=""
 COMMAND_ARGS=()
 parse_global_options "$@"
 
+if [[ "$REPLACE_HOST_KEY" == "1" ]]; then
+  replace_known_host
+fi
+
 case "$COMMAND" in
-  provision-user)
+  adduser|init|provision-user)
     cmd_provision_user "${COMMAND_ARGS[@]}"
     ;;
-  add-key)
+  addkey|key|add-key)
     cmd_add_key "${COMMAND_ARGS[@]}"
     ;;
-  sudo-test)
+  sudo|sudo-test)
     cmd_sudo_test "${COMMAND_ARGS[@]}"
     ;;
-  gpu-info)
+  gpu|gpu-info)
     cmd_gpu_info "${COMMAND_ARGS[@]}"
     ;;
   status)
