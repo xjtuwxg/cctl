@@ -211,7 +211,7 @@ REMOTE
   {
     printf '%s\n' "$sudo_password"
     printf '%s\n' "$script_b64"
-  } | ssh "${args[@]}" "$(remote_target)" "$remote_cmd"
+  } | ssh "${args[@]}" "$(remote_target)" "bash -c $(shell_quote "$remote_cmd")"
 }
 
 send_remote_user_script() {
@@ -243,7 +243,7 @@ cmd_provision_user() {
 
   while (($#)); do
     case "$1" in
-      --user)
+      -u|--user)
         new_user="${2:-}"
         shift 2
         ;;
@@ -271,10 +271,10 @@ cmd_provision_user() {
       -h|--help)
         cat <<'EOF'
 Usage:
-  ./cctl [global options] [LOGIN_USER@]HOST adduser --user USER --pubkey KEY_TEXT_OR_PATH [options]
+  ./cctl [global options] [LOGIN_USER@]HOST adduser -u USER --pubkey KEY_TEXT_OR_PATH [options]
 
 Options:
-  --user USER                 New or existing Linux user to configure
+  -u, --user USER             New or existing Linux user to configure
   --pubkey KEY_TEXT_OR_PATH   Public key text in quotes, or a path such as ~/.ssh/id_ed25519.pub
   --password PASSWORD         Set password from argument (less private; avoid shell history)
   --password-stdin            Read password from stdin
@@ -379,7 +379,7 @@ fi
 
 echo "remote: done"
 REMOTE
-  } | send_remote_script
+  } | send_remote_script_tty
 
   info "try: ssh ${new_user}@${HOST}"
 }
@@ -390,7 +390,7 @@ cmd_add_key() {
 
   while (($#)); do
     case "$1" in
-      --user)
+      -u|--user)
         target_user="${2:-}"
         shift 2
         ;;
@@ -401,10 +401,10 @@ cmd_add_key() {
       -h|--help)
         cat <<'EOF'
 Usage:
-  ./cctl [global options] [LOGIN_USER@]HOST addkey [--user USER] --pubkey KEY_TEXT_OR_PATH
+  ./cctl [global options] [LOGIN_USER@]HOST addkey [-u USER] --pubkey KEY_TEXT_OR_PATH
 
 Options:
-  --user USER                 User to update (default: SSH login user)
+  -u, --user USER             User to update (default: SSH login user)
   --pubkey KEY_TEXT_OR_PATH   Public key text in quotes, or a path such as ~/.ssh/id_ed25519.pub
 EOF
         return 0
@@ -445,24 +445,24 @@ else
   echo "remote: public key added"
 fi
 REMOTE
-  } | send_remote_script
+  } | send_remote_script_tty
 }
 
 cmd_sudo_test() {
   local target_user=""
   while (($#)); do
     case "$1" in
-      --user)
+      -u|--user)
         target_user="${2:-}"
         shift 2
         ;;
       -h|--help)
         cat <<'EOF'
 Usage:
-  ./cctl [global options] [LOGIN_USER@]HOST sudo [--user USER]
+  ./cctl [global options] [LOGIN_USER@]HOST sudo [-u USER]
 
 Options:
-  --user USER                 User to check (default: SSH login user)
+  -u, --user USER             User to check (default: SSH login user)
 EOF
         return 0
         ;;
@@ -487,17 +487,17 @@ cmd_fish() {
   local target_user=""
   while (($#)); do
     case "$1" in
-      --user)
+      -u|--user)
         target_user="${2:-}"
         shift 2
         ;;
       -h|--help)
         cat <<'EOF'
 Usage:
-  ./cctl [global options] [LOGIN_USER@]HOST fish [--user USER]
+  ./cctl [global options] [LOGIN_USER@]HOST fish [-u USER]
 
 Options:
-  --user USER                 User to update (default: SSH login user)
+  -u, --user USER             User to update (default: SSH login user)
 EOF
         return 0
         ;;

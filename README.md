@@ -22,7 +22,7 @@ Provision a user:
 
 ```sh
 ./cctl cc@192.5.86.156 adduser \
-  --user llamacpp \
+  -u llamacpp \
   --pubkey ~/.ssh/id_ed25519.pub
 ```
 
@@ -83,7 +83,7 @@ Use a private key and an explicit login user:
 ```sh
 ./cctl cc@192.5.86.156 \
   --identity-file ~/.ssh/chameleon_key \
-  adduser --user llamacpp --pubkey ~/.ssh/id_ed25519.pub
+  adduser -u llamacpp --pubkey ~/.ssh/id_ed25519.pub
 ```
 
 The `-u` option is still available if you prefer to keep the login user separate:
@@ -91,7 +91,7 @@ The `-u` option is still available if you prefer to keep the login user separate
 ```sh
 ./cctl -u cc 192.5.86.156 \
   --identity-file ~/.ssh/chameleon_key \
-  adduser --user llamacpp --pubkey ~/.ssh/id_ed25519.pub
+  adduser -u llamacpp --pubkey ~/.ssh/id_ed25519.pub
 ```
 
 If a reused instance IP reports `REMOTE HOST IDENTIFICATION HAS CHANGED`, remove the old SSH host key entry before connecting:
@@ -107,21 +107,21 @@ Use `-y` with `-R` or `--replace-host-key` only when you already expect the inst
 Prompt interactively, the default:
 
 ```sh
-./cctl 192.5.86.156 adduser --user llamacpp --pubkey ~/.ssh/id_ed25519.pub
+./cctl 192.5.86.156 adduser -u llamacpp --pubkey ~/.ssh/id_ed25519.pub
 ```
 
 Read from stdin:
 
 ```sh
 printf '%s\n' 'temporary-password' | ./cctl 192.5.86.156 \
-  adduser --user llamacpp --pubkey ~/.ssh/id_ed25519.pub --password-stdin
+  adduser -u llamacpp --pubkey ~/.ssh/id_ed25519.pub --password-stdin
 ```
 
 Skip password changes and only configure SSH access:
 
 ```sh
 ./cctl 192.5.86.156 adduser \
-  --user llamacpp \
+  -u llamacpp \
   --pubkey ~/.ssh/id_ed25519.pub \
   --no-password
 ```
@@ -130,7 +130,7 @@ Force the user to change the password at first password login:
 
 ```sh
 ./cctl 192.5.86.156 adduser \
-  --user llamacpp \
+  -u llamacpp \
   --pubkey ~/.ssh/id_ed25519.pub \
   --force-password-change
 ```
@@ -138,6 +138,7 @@ Force the user to change the password at first password login:
 ## Notes
 
 - The remote login user defaults to your local username. Prefer `LOGIN_USER@HOST`; `-u USER` and `--user USER` are available as alternatives.
+- Before the host, `-u USER` means SSH login user. After a command such as `adduser`, `addkey`, `sudo`, or `fish`, `-u USER` means that command's target user.
 - Older command names are still accepted as compatibility aliases: `init`, `key`, `provision-user`, `add-key`, `sudo-test`, and `gpu-info`.
 - The script uses `sudo` remotely, so `cc` must be able to run sudo.
 - The remote sudo group is detected as `sudo` first and `wheel` second.
