@@ -28,6 +28,7 @@ Commands:
   adduser                     Create/update a user, install SSH key, add sudo
   addkey                      Add another public key to an existing user
   fish                        Install fish and set the user's default shell
+  nopasswd                    Allow the user to run sudo without a password
   sudo                        Verify the target user can run sudo
   gpu                         Check GPUs, NVIDIA driver, CUDA, and runtimes
   status                      Show basic instance status
@@ -37,6 +38,7 @@ Examples:
   ./cctl cc@192.5.86.156 adduser --user llamacpp --pubkey ~/.ssh/id_ed25519.pub
   ./cctl llamacpp@192.5.86.156 addkey --pubkey ~/.ssh/work_key.pub
   ./cctl llamacpp@192.5.86.156 fish
+  ./cctl llamacpp@192.5.86.156 nopasswd
   ./cctl llamacpp@192.5.86.156 sudo
   ./cctl xiaoguang@192.5.86.157 gpu
   ./cctl 192.5.86.156 gpu
@@ -569,6 +571,74 @@ REMOTE
   } | send_remote_script_tty
 }
 
+cmd_nopasswd() {
+  local target_user=""
+  while (($#)); do
+    case "$1" in
+      -u|--user)
+        target_user="${2:-}"
+        shift 2
+        ;;
+      -h|--help)
+        cat <<'EOF'
+Usage:
+  ./cctl [global options] [LOGIN_USER@]HOST nopasswd [-u USER]
+
+Options:
+  -u, --user USER             User to update (default: SSH login user)
+EOF
+        return 0
+        ;;
+      *)
+        die "unknown nopasswd option: $1"
+        ;;
+    esac
+  done
+
+  require_login_user
+  if [[ -z "$target_user" ]]; then
+    target_user="$LOGIN_USER"
+  fi
+  validate_username "$target_user"
+
+  {
+    printf 'TARGET_USER=%s\n' "$(shell_quote "$target_user")"
+    cat <<'REMOTE'
+set -euo pipefail
+
+getent passwd "$TARGET_USER" >/dev/null || {
+  echo "remote error: user does not exist: $TARGET_USER" >&2
+  exit 1
+}
+
+command -v visudo >/dev/null 2>&1 || {
+  echo "remote error: visudo is required" >&2
+  exit 1
+}
+
+install -d -m 755 /etc/sudoers.d
+sudoers_file="/etc/sudoers.d/${TARGET_USER}-nopasswd"
+tmp_file="$(mktemp)"
+trap 'rm -f "$tmp_file"' EXIT
+
+printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$TARGET_USER" > "$tmp_file"
+chmod 440 "$tmp_file"
+
+if visudo -cf "$tmp_file" >/dev/null; then
+  install -m 440 "$tmp_file" "$sudoers_file"
+else
+  echo "remote error: generated sudoers file failed visudo validation" >&2
+  visudo -cf "$tmp_file" >&2 || true
+  exit 1
+fi
+
+visudo -cf /etc/sudoers >/dev/null
+echo "remote: installed $sudoers_file"
+echo "remote: $TARGET_USER can now run sudo without a password"
+REMOTE
+  } | send_remote_script_tty
+}
+
 cmd_status() {
   [[ "$#" -eq 0 ]] || die "status does not accept arguments"
   run_ssh "hostname; uptime; uname -a; df -h /; free -h 2>/dev/null || true"
@@ -776,7 +846,7 @@ parse_global_options() {
         usage
         exit 0
         ;;
-      adduser|addkey|fish|init|key|sudo|gpu|status|run|provision-user|add-key|sudo-test|gpu-info)
+      adduser|addkey|fish|nopasswd|init|key|sudo|gpu|status|run|provision-user|add-key|sudo-test|gpu-info)
         COMMAND="$1"
         shift
         COMMAND_ARGS=("$@")
@@ -820,6 +890,9 @@ case "$COMMAND" in
     ;;
   fish)
     cmd_fish "${COMMAND_ARGS[@]}"
+    ;;
+  nopasswd)
+    cmd_nopasswd "${COMMAND_ARGS[@]}"
     ;;
   sudo|sudo-test)
     cmd_sudo_test "${COMMAND_ARGS[@]}"

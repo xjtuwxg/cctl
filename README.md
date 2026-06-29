@@ -38,6 +38,12 @@ Verify sudo access:
 ./cctl llamacpp@192.5.86.156 sudo
 ```
 
+Allow the user to run sudo without entering a password:
+
+```sh
+./cctl llamacpp@192.5.86.156 nopasswd
+```
+
 ## Common Commands
 
 Show basic instance status:
@@ -142,5 +148,6 @@ Force the user to change the password at first password login:
 - Older command names are still accepted as compatibility aliases: `init`, `key`, `provision-user`, `add-key`, `sudo-test`, and `gpu-info`.
 - The script uses `sudo` remotely, so `cc` must be able to run sudo.
 - The remote sudo group is detected as `sudo` first and `wheel` second.
+- `nopasswd` writes `/etc/sudoers.d/USER-nopasswd` and validates it with `visudo`.
 - Public keys may be passed as a path or as a literal OpenSSH public key string.
 - `gpu` is read-only and does not require sudo. It prints a compact summary; some checks may report unavailable if tools such as `lspci`, `nvcc`, Docker, or Python packages are not installed.
