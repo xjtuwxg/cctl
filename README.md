@@ -52,6 +52,12 @@ Check GPU hardware, NVIDIA driver state, CUDA toolkit/libraries, Python GPU pack
 ./cctl xiaoguang@192.5.86.157 gpu
 ```
 
+Install fish and set it as the login user's default shell:
+
+```sh
+./cctl xiaoguang@192.5.86.157 fish
+```
+
 Add another public key to an existing user:
 
 ```sh

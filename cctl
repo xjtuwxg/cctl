@@ -27,6 +27,7 @@ Global options:
 Commands:
   adduser                     Create/update a user, install SSH key, add sudo
   addkey                      Add another public key to an existing user
+  fish                        Install fish and set the user's default shell
   sudo                        Verify the target user can run sudo
   gpu                         Check GPUs, NVIDIA driver, CUDA, and runtimes
   status                      Show basic instance status
@@ -35,6 +36,7 @@ Commands:
 Examples:
   ./cctl cc@192.5.86.156 adduser --user llamacpp --pubkey ~/.ssh/id_ed25519.pub
   ./cctl llamacpp@192.5.86.156 addkey --pubkey ~/.ssh/work_key.pub
+  ./cctl llamacpp@192.5.86.156 fish
   ./cctl llamacpp@192.5.86.156 sudo
   ./cctl xiaoguang@192.5.86.157 gpu
   ./cctl 192.5.86.156 gpu
@@ -173,6 +175,43 @@ send_remote_script() {
     args+=("$arg")
   done < <(ssh_base_args)
   ssh "${args[@]}" "$(remote_target)" "sudo bash -s"
+}
+
+send_remote_script_tty() {
+  require_host
+  require_login_user
+  local args=()
+  while IFS= read -r -d '' arg; do
+    args+=("$arg")
+  done < <(ssh_base_args)
+
+  local sudo_password script_b64 remote_cmd
+  read -r -s -p "Sudo password for $(remote_target) (leave empty to try passwordless sudo): " sudo_password < /dev/tty
+  echo > /dev/tty
+
+  script_b64="$(base64)"
+  remote_cmd="$(cat <<'REMOTE'
+set -euo pipefail
+IFS= read -r sudo_password
+script_b64="$(cat)"
+tmp="$(mktemp)"
+trap 'rm -f "$tmp"' EXIT
+printf '%s\n' "$script_b64" | base64 -d > "$tmp"
+echo "remote: validating sudo access"
+if sudo -n true 2>/dev/null; then
+  echo "remote: sudo validated without password"
+  sudo bash "$tmp"
+else
+  printf '%s\n' "$sudo_password" | sudo -S -p '' true
+  echo "remote: sudo validated"
+  printf '%s\n' "$sudo_password" | sudo -S -p '' bash "$tmp"
+fi
+REMOTE
+)"
+  {
+    printf '%s\n' "$sudo_password"
+    printf '%s\n' "$script_b64"
+  } | ssh "${args[@]}" "$(remote_target)" "$remote_cmd"
 }
 
 send_remote_user_script() {
@@ -444,6 +483,92 @@ EOF
   fi
 }
 
+cmd_fish() {
+  local target_user=""
+  while (($#)); do
+    case "$1" in
+      --user)
+        target_user="${2:-}"
+        shift 2
+        ;;
+      -h|--help)
+        cat <<'EOF'
+Usage:
+  ./cctl [global options] [LOGIN_USER@]HOST fish [--user USER]
+
+Options:
+  --user USER                 User to update (default: SSH login user)
+EOF
+        return 0
+        ;;
+      *)
+        die "unknown fish option: $1"
+        ;;
+    esac
+  done
+
+  require_login_user
+  if [[ -z "$target_user" ]]; then
+    target_user="$LOGIN_USER"
+  fi
+  validate_username "$target_user"
+
+  {
+    printf 'TARGET_USER=%s\n' "$(shell_quote "$target_user")"
+    cat <<'REMOTE'
+set -euo pipefail
+
+getent passwd "$TARGET_USER" >/dev/null || {
+  echo "remote error: user does not exist: $TARGET_USER" >&2
+  exit 1
+}
+
+if command -v fish >/dev/null 2>&1; then
+  echo "remote: fish already installed"
+else
+  echo "remote: installing fish"
+  if command -v apt-get >/dev/null 2>&1; then
+    echo "remote: apt-get update"
+    apt-get -o DPkg::Lock::Timeout=60 update
+    echo "remote: apt-get install fish"
+    DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=60 install -y fish
+  elif command -v dnf >/dev/null 2>&1; then
+    echo "remote: dnf install fish"
+    dnf install -y fish
+  elif command -v yum >/dev/null 2>&1; then
+    echo "remote: yum install fish"
+    yum install -y fish
+  elif command -v zypper >/dev/null 2>&1; then
+    echo "remote: zypper install fish"
+    zypper --non-interactive install fish
+  elif command -v pacman >/dev/null 2>&1; then
+    echo "remote: pacman install fish"
+    pacman -Sy --noconfirm fish
+  else
+    echo "remote error: no supported package manager found for installing fish" >&2
+    exit 1
+  fi
+fi
+
+fish_path="$(command -v fish)"
+if ! grep -qxF "$fish_path" /etc/shells 2>/dev/null; then
+  echo "$fish_path" >> /etc/shells
+  echo "remote: added $fish_path to /etc/shells"
+fi
+
+current_shell="$(getent passwd "$TARGET_USER" | cut -d: -f7)"
+if [[ "$current_shell" == "$fish_path" ]]; then
+  echo "remote: $TARGET_USER already uses $fish_path"
+else
+  chsh -s "$fish_path" "$TARGET_USER"
+  echo "remote: set $TARGET_USER shell to $fish_path"
+fi
+
+echo "remote: done"
+REMOTE
+  } | send_remote_script_tty
+}
+
 cmd_status() {
   [[ "$#" -eq 0 ]] || die "status does not accept arguments"
   run_ssh "hostname; uptime; uname -a; df -h /; free -h 2>/dev/null || true"
@@ -651,7 +776,7 @@ parse_global_options() {
         usage
         exit 0
         ;;
-      adduser|addkey|init|key|sudo|gpu|status|run|provision-user|add-key|sudo-test|gpu-info)
+      adduser|addkey|fish|init|key|sudo|gpu|status|run|provision-user|add-key|sudo-test|gpu-info)
         COMMAND="$1"
         shift
         COMMAND_ARGS=("$@")
@@ -692,6 +817,9 @@ case "$COMMAND" in
     ;;
   addkey|key|add-key)
     cmd_add_key "${COMMAND_ARGS[@]}"
+    ;;
+  fish)
+    cmd_fish "${COMMAND_ARGS[@]}"
     ;;
   sudo|sudo-test)
     cmd_sudo_test "${COMMAND_ARGS[@]}"
