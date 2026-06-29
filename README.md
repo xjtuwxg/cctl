@@ -108,6 +108,8 @@ If a reused instance IP reports `REMOTE HOST IDENTIFICATION HAS CHANGED`, remove
 
 Use `-y` with `-R` or `--replace-host-key` only when you already expect the instance behind that IP to have changed.
 
+Commands that change the remote machine, such as `adduser`, `addkey`, `fish`, and `nopasswd`, prompt once for the SSH login user's sudo password unless passwordless sudo is already configured.
+
 ## Password Options
 
 Prompt interactively, the default:

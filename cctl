@@ -35,7 +35,7 @@ Commands:
   run -- COMMAND              Run a command on the instance
 
 Examples:
-  ./cctl cc@192.5.86.156 adduser --user llamacpp --pubkey ~/.ssh/id_ed25519.pub
+  ./cctl cc@192.5.86.156 adduser -u llamacpp --pubkey ~/.ssh/id_ed25519.pub
   ./cctl llamacpp@192.5.86.156 addkey --pubkey ~/.ssh/work_key.pub
   ./cctl llamacpp@192.5.86.156 fish
   ./cctl llamacpp@192.5.86.156 nopasswd
@@ -64,6 +64,13 @@ confirm() {
   local answer
   read -r -p "$prompt [y/N] " answer
   [[ "$answer" == "y" || "$answer" == "Y" || "$answer" == "yes" || "$answer" == "YES" ]]
+}
+
+option_value() {
+  local opt="$1"
+  local value="${2-}"
+  [[ -n "$value" ]] || die "$opt requires a value"
+  printf "%s" "$value"
 }
 
 require_host() {
@@ -170,15 +177,6 @@ run_ssh_tty() {
   ssh -tt "${args[@]}" "$(remote_target)" "$@"
 }
 
-send_remote_script() {
-  require_host
-  local args=()
-  while IFS= read -r -d '' arg; do
-    args+=("$arg")
-  done < <(ssh_base_args)
-  ssh "${args[@]}" "$(remote_target)" "sudo bash -s"
-}
-
 send_remote_script_tty() {
   require_host
   require_login_user
@@ -204,7 +202,14 @@ if sudo -n true 2>/dev/null; then
   echo "remote: sudo validated without password"
   sudo bash "$tmp"
 else
-  printf '%s\n' "$sudo_password" | sudo -S -p '' true
+  if [[ -z "$sudo_password" ]]; then
+    echo "remote error: sudo requires a password" >&2
+    exit 1
+  fi
+  printf '%s\n' "$sudo_password" | sudo -S -p '' true || {
+    echo "remote error: sudo password was rejected" >&2
+    exit 1
+  }
   echo "remote: sudo validated"
   printf '%s\n' "$sudo_password" | sudo -S -p '' bash "$tmp"
 fi
@@ -246,15 +251,15 @@ cmd_provision_user() {
   while (($#)); do
     case "$1" in
       -u|--user)
-        new_user="${2:-}"
+        new_user="$(option_value "$1" "${2-}")"
         shift 2
         ;;
       --pubkey)
-        pubkey_arg="${2:-}"
+        pubkey_arg="$(option_value "$1" "${2-}")"
         shift 2
         ;;
       --password)
-        password="${2:-}"
+        password="$(option_value "$1" "${2-}")"
         password_mode="value"
         shift 2
         ;;
@@ -393,11 +398,11 @@ cmd_add_key() {
   while (($#)); do
     case "$1" in
       -u|--user)
-        target_user="${2:-}"
+        target_user="$(option_value "$1" "${2-}")"
         shift 2
         ;;
       --pubkey)
-        pubkey_arg="${2:-}"
+        pubkey_arg="$(option_value "$1" "${2-}")"
         shift 2
         ;;
       -h|--help)
@@ -455,7 +460,7 @@ cmd_sudo_test() {
   while (($#)); do
     case "$1" in
       -u|--user)
-        target_user="${2:-}"
+        target_user="$(option_value "$1" "${2-}")"
         shift 2
         ;;
       -h|--help)
@@ -490,7 +495,7 @@ cmd_fish() {
   while (($#)); do
     case "$1" in
       -u|--user)
-        target_user="${2:-}"
+        target_user="$(option_value "$1" "${2-}")"
         shift 2
         ;;
       -h|--help)
@@ -576,7 +581,7 @@ cmd_nopasswd() {
   while (($#)); do
     case "$1" in
       -u|--user)
-        target_user="${2:-}"
+        target_user="$(option_value "$1" "${2-}")"
         shift 2
         ;;
       -h|--help)
@@ -819,19 +824,19 @@ parse_global_options() {
   while (($#)); do
     case "$1" in
       -u|--user)
-        LOGIN_USER="${2:-}"
+        LOGIN_USER="$(option_value "$1" "${2-}")"
         shift 2
         ;;
       -p|--port)
-        PORT="${2:-}"
+        PORT="$(option_value "$1" "${2-}")"
         shift 2
         ;;
       --identity-file)
-        IDENTITY_FILE="${2:-}"
+        IDENTITY_FILE="$(option_value "$1" "${2-}")"
         shift 2
         ;;
       --ssh-option)
-        SSH_OPTIONS+=("-o" "${2:-}")
+        SSH_OPTIONS+=("-o" "$(option_value "$1" "${2-}")")
         shift 2
         ;;
       -R|--replace-host-key)
