@@ -10,6 +10,16 @@ The initial workflow is:
 4. Install the user's public SSH key into `~/.ssh/authorized_keys`.
 5. Optionally set the user's password.
 
+## Installation
+
+To use `cctl` globally from any directory, make it executable and copy it to your local bin directory:
+
+```sh
+chmod +x ./cctl
+sudo cp ./cctl /usr/local/bin/
+```
+Now you can simply type `cctl` instead of `./cctl` everywhere!
+
 ## Quick Start
 
 Make the script executable:
@@ -109,6 +119,54 @@ If a reused instance IP reports `REMOTE HOST IDENTIFICATION HAS CHANGED`, remove
 Use `-y` with `-R` or `--replace-host-key` only when you already expect the instance behind that IP to have changed.
 
 Commands that change the remote machine, such as `adduser`, `addkey`, `fish`, and `nopasswd`, prompt once for the SSH login user's sudo password unless passwordless sudo is already configured.
+
+## OpenStack Commands
+
+`cctl` also provides wrappers around the OpenStack API to manage Chameleon Cloud instances and leases directly from your local machine, without needing to specify a remote host.
+
+### Prerequisites
+
+These commands require the `openstack` CLI with the Blazar plugin. The recommended way to install this globally without breaking your system Python is using `uv`:
+
+```sh
+# 1. Install uv if you haven't already: https://docs.astral.sh/uv/
+# 2. Install openstack client with the blazar plugin:
+uv tool install python-openstackclient --with python-blazarclient --force
+```
+
+You must also download your OpenStack RC file from the Chameleon Cloud portal (Project -> API Access) and source it in your terminal before running these commands:
+
+```sh
+source ~/Downloads/CHI-123456-openrc.sh
+```
+*(Tip: If you use federated login like a university email, generate an **Application Credential** from the Identity tab and download its openrc file instead).*
+
+### Usage
+
+List all active instances:
+
+```sh
+./cctl instances
+```
+
+List all reservations/leases (colorized by expiration status):
+
+```sh
+./cctl leases
+```
+
+Renew a lease by adding days to its current end date:
+
+```sh
+./cctl renew my-lease --add-days 7
+```
+*(Chameleon Cloud restricts renewals to within 4 days of the lease end time).*
+
+Launch a new instance:
+
+```sh
+./cctl launch --name my-instance --flavor m1.medium --image CC-Ubuntu20.04 --key-name mykey
+```
 
 ## Password Options
 
