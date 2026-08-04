@@ -34,6 +34,7 @@ SSH Commands:
   sudo                        Verify the target user can run sudo
   gpu                         Check GPUs, NVIDIA driver, CUDA, and runtimes
   status                      Show basic instance status
+  tunnel                      Forward one or more remote ports locally
   run -- COMMAND              Run a command on the instance
 
 OpenStack Commands (Requires OpenStack RC):
@@ -45,6 +46,7 @@ OpenStack Commands (Requires OpenStack RC):
 Examples:
   ./cctl cc@192.5.86.156 adduser -u llamacpp --pubkey ~/.ssh/id_ed25519.pub
   ./cctl llamacpp@192.5.86.156 fish
+  ./cctl llamacpp@192.5.86.156 tunnel -L 8888 -L 6006
   ./cctl 192.5.86.156 run -- whoami
   ./cctl instances
   ./cctl instances --profile tacc
@@ -853,6 +855,94 @@ EOF_HELP
   run_ssh "$@"
 }
 
+validate_tunnel_port() {
+  local port="$1"
+  [[ "$port" =~ ^[0-9]{1,5}$ ]] || die "invalid tunnel port: $port"
+  ((10#$port >= 1 && 10#$port <= 65535)) || die "tunnel port must be between 1 and 65535: $port"
+}
+
+# Forward one or more local ports through the remote SSH server.
+cmd_tunnel() {
+  if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    cat <<'EOF_HELP'
+Usage:
+  ./cctl [global options] [LOGIN_USER@]HOST tunnel -L SPEC [-L SPEC ...]
+
+Options:
+  -L, --forward SPEC          Local forward; may be repeated
+
+Forward formats:
+  PORT
+      Same-port shorthand for PORT:localhost:PORT.
+
+  LOCAL_PORT:REMOTE_PORT
+      Shorthand for LOCAL_PORT:localhost:REMOTE_PORT.
+
+  LOCAL_PORT:REMOTE_HOST:REMOTE_PORT
+  BIND_ADDRESS:LOCAL_PORT:REMOTE_HOST:REMOTE_PORT
+      Standard OpenSSH local-forward formats.
+
+Examples:
+  ./cctl user@host tunnel -L 8888
+  ./cctl user@host tunnel -L 8888:8888
+  ./cctl user@host tunnel -L 8888:localhost:8888 -L 6006:localhost:6006
+  ./cctl user@host tunnel -L 127.0.0.1:15432:db.internal:5432
+
+The tunnel runs in the foreground. Press Ctrl-C to close all forwards.
+EOF_HELP
+    return 0
+  fi
+
+  require_host
+  require_login_user
+
+  local forwards=()
+  local spec local_port remote_port
+  while (($#)); do
+    case "$1" in
+      -L|--forward)
+        spec="$(option_value "$1" "${2-}")"
+        shift 2
+
+        if [[ "$spec" =~ ^[0-9]+$ ]]; then
+          validate_tunnel_port "$spec"
+          spec="${spec}:localhost:${spec}"
+        elif [[ "$spec" =~ ^([0-9]+):([0-9]+)$ ]]; then
+          local_port="${BASH_REMATCH[1]}"
+          remote_port="${BASH_REMATCH[2]}"
+          validate_tunnel_port "$local_port"
+          validate_tunnel_port "$remote_port"
+          spec="${local_port}:localhost:${remote_port}"
+        elif [[ "$spec" != *:*:* ]]; then
+          die "invalid forward '$spec'; expected PORT, LOCAL_PORT:REMOTE_PORT, or an OpenSSH -L specification"
+        fi
+
+        forwards+=("$spec")
+        ;;
+      *)
+        die "unknown tunnel option: $1"
+        ;;
+    esac
+  done
+
+  ((${#forwards[@]})) || die "tunnel requires at least one -L or --forward"
+
+  local args=(-N -T -o ExitOnForwardFailure=yes)
+  local arg
+  while IFS= read -r -d '' arg; do
+    args+=("$arg")
+  done < <(ssh_base_args)
+
+  info "opening SSH tunnel to $(remote_target)"
+  for spec in "${forwards[@]}"; do
+    info "forward: $spec"
+    args+=(-L "$spec")
+  done
+  info "press Ctrl-C to close the tunnel"
+
+  ssh "${args[@]}" "$(remote_target)"
+}
+
 # Find an RC file without exposing or importing its credentials into this shell.
 # User config takes precedence over RC files kept beside this script.
 profile_rc_path() {
@@ -1194,7 +1284,7 @@ parse_global_options() {
         usage
         exit 0
         ;;
-      adduser|addkey|fish|nopasswd|init|key|sudo|gpu|status|run|provision-user|add-key|sudo-test|gpu-info|instances|launch|leases|renew)
+      adduser|addkey|fish|nopasswd|init|key|sudo|gpu|status|tunnel|run|provision-user|add-key|sudo-test|gpu-info|instances|launch|leases|renew)
         COMMAND="$1"
         shift
         COMMAND_ARGS=("$@")
@@ -1250,6 +1340,9 @@ case "$COMMAND" in
     ;;
   status)
     cmd_status "${COMMAND_ARGS[@]}"
+    ;;
+  tunnel)
+    cmd_tunnel "${COMMAND_ARGS[@]}"
     ;;
   run)
     cmd_run "${COMMAND_ARGS[@]}"

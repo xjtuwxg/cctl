@@ -59,6 +59,16 @@ ssh YOUR_USER@PUBLIC_IP
 
 Commands that modify the instance ask for confirmation and may prompt for the `cc` user's sudo password.
 
+### Forward local ports
+
+Forward one or several remote ports through a single SSH connection:
+
+```sh
+./cctl YOUR_USER@PUBLIC_IP tunnel -L 8888 -L 6006
+```
+
+Each number maps the same remote port to the same local port. The tunnel stays in the foreground; press `Ctrl-C` to close it.
+
 ## Commands
 
 | Area | Command | Purpose |
@@ -71,6 +81,7 @@ Commands that modify the instance ask for confirmation and may prompt for the `c
 | SSH | `addkey` | Add a public key to an existing user |
 | SSH | `status` | Show host, uptime, disk, and memory status |
 | SSH | `gpu` | Inspect GPU, driver, CUDA, and runtimes |
+| SSH | `tunnel` | Forward one or more remote ports locally |
 | SSH | `sudo` / `nopasswd` | Check or configure sudo access |
 | SSH | `fish` | Install fish and set the login shell |
 | SSH | `run` | Run a remote command |
@@ -81,5 +92,6 @@ Use `./cctl COMMAND --help` for command-specific options.
 
 - [OpenStack and multi-site setup](docs/openstack.md)
 - [SSH instance management](docs/ssh.md)
+- [SSH tunnels and port forwarding](docs/tunnels.md)
 
 RC files contain credentials. Keep them private and never commit them; the common `tacc.sh`, `uc.sh`, and `*openrc*.sh` names are already ignored by this repository.

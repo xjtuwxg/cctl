@@ -79,6 +79,14 @@ Run an arbitrary remote command:
 ./cctl USER@HOST run -- whoami
 ```
 
+Forward one or more remote ports to your computer:
+
+```sh
+./cctl USER@HOST tunnel -L 8888 -L 6006
+```
+
+See [SSH tunnels and port forwarding](tunnels.md) for forward formats, security notes, and troubleshooting.
+
 Add another public key. The target user defaults to the SSH login user:
 
 ```sh
