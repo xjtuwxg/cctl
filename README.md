@@ -134,19 +134,42 @@ These commands require the `openstack` CLI with the Blazar plugin. The recommend
 uv tool install python-openstackclient --with python-blazarclient --force
 ```
 
-You must also download your OpenStack RC file from the Chameleon Cloud portal (Project -> API Access) and source it in your terminal before running these commands:
+Download an OpenStack RC file for each Chameleon site from the Chameleon Cloud portal (Project -> API Access). For multi-site listing, save them as `tacc.sh` and `uc.sh` either beside `cctl` or in `~/.config/cctl/`:
 
 ```sh
-source ~/Downloads/CHI-123456-openrc.sh
+mkdir -p ~/.config/cctl
+cp ~/Downloads/CHI-TACC-openrc.sh ~/.config/cctl/tacc.sh
+cp ~/Downloads/CHI-UC-openrc.sh ~/.config/cctl/uc.sh
+chmod 600 ~/.config/cctl/tacc.sh ~/.config/cctl/uc.sh
 ```
 *(Tip: If you use federated login like a university email, generate an **Application Credential** from the Identity tab and download its openrc file instead).*
 
+The RC files contain credentials and are ignored by this repository. You can set
+`CCTL_CONFIG_DIR` if you prefer another directory.
+
 ### Usage
 
-List all active instances:
+List instances from both TACC and UC. `cctl` loads each RC file in a separate
+subshell, because sourcing both files into one shell would make the second file
+overwrite the first file's `OS_*` variables:
 
 ```sh
 ./cctl instances
+```
+
+Query only one site, or use the environment you already sourced:
+
+```sh
+./cctl instances --profile tacc
+./cctl instances --profile uc
+source ~/Downloads/CHI-TACC-openrc.sh
+./cctl instances --current
+```
+
+Options not consumed by `cctl` are passed to `openstack server list`:
+
+```sh
+./cctl instances --profile tacc --long
 ```
 
 List all reservations/leases (colorized by expiration status):

@@ -2,6 +2,7 @@
 set -euo pipefail
 
 PROGRAM="$(basename "$0")"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 HOST=""
 LOGIN_USER="${USER:-}"
 PORT="22"
@@ -36,7 +37,7 @@ SSH Commands:
   run -- COMMAND              Run a command on the instance
 
 OpenStack Commands (Requires OpenStack RC):
-  instances                   List Chameleon Cloud instances
+  instances                   List instances across TACC and UC profiles
   launch                      Launch a new instance
   leases                      List Chameleon Cloud leases (colorized by expiration)
   renew                       Renew a Chameleon Cloud lease
@@ -46,6 +47,7 @@ Examples:
   ./cctl llamacpp@192.5.86.156 fish
   ./cctl 192.5.86.156 run -- whoami
   ./cctl instances
+  ./cctl instances --profile tacc
   ./cctl leases
   ./cctl renew my-lease --add-days 7
 EOF
@@ -851,20 +853,146 @@ EOF_HELP
   run_ssh "$@"
 }
 
+# Find an RC file without exposing or importing its credentials into this shell.
+# User config takes precedence over RC files kept beside this script.
+profile_rc_path() {
+  local profile="$1"
+  [[ "$profile" =~ ^[a-zA-Z0-9_-]+$ ]] || return 1
+
+  if [[ -n "${CCTL_CONFIG_DIR:-}" ]]; then
+    [[ -f "$CCTL_CONFIG_DIR/$profile.sh" ]] || return 1
+    printf '%s\n' "$CCTL_CONFIG_DIR/$profile.sh"
+    return 0
+  fi
+
+  local user_config_dir=""
+  if [[ -n "${XDG_CONFIG_HOME:-}" ]]; then
+    user_config_dir="$XDG_CONFIG_HOME/cctl"
+  elif [[ -n "${HOME:-}" ]]; then
+    user_config_dir="$HOME/.config/cctl"
+  fi
+
+  if [[ -n "$user_config_dir" && -f "$user_config_dir/$profile.sh" ]]; then
+    printf '%s\n' "$user_config_dir/$profile.sh"
+  elif [[ -f "$SCRIPT_DIR/$profile.sh" ]]; then
+    printf '%s\n' "$SCRIPT_DIR/$profile.sh"
+  else
+    return 1
+  fi
+}
+
+# Query one profile in a subshell so its OS_* variables cannot overwrite another
+# profile or leak back into the caller's environment.
+list_instances_from_rc() (
+  local profile="$1"
+  local rc_file="$2"
+  shift 2
+
+  set +u
+  # shellcheck disable=SC1090
+  source "$rc_file"
+  set -u
+
+  [[ -n "${OS_AUTH_URL:-}" ]] || die "$rc_file did not set OS_AUTH_URL"
+  printf '\033[96m==> Profile: %s | Chameleon Region: %s\033[0m\n' \
+    "$profile" "${OS_REGION_NAME:-Unknown}"
+  openstack server list "$@"
+)
+
+list_instances_from_current_env() {
+  [[ -n "${OS_AUTH_URL:-}" ]] || die "no OpenStack environment is active; source an RC file or configure cctl profiles"
+  printf '\033[96m==> Profile: current | Chameleon Region: %s\033[0m\n' \
+    "${OS_REGION_NAME:-Unknown}"
+  openstack server list "$@"
+}
+
 # List Chameleon Cloud (OpenStack) instances
 cmd_instances() {
   if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     cat <<'EOF_HELP'
 Usage:
-  ./cctl instances
+  ./cctl instances [--profile all|NAME] [--current] [openstack server list options]
 
-Lists OpenStack instances. Requires OpenStack RC environment variables.
+By default, queries both the tacc and uc profiles when their RC files exist.
+Each profile is loaded in an isolated subshell, so credentials do not overwrite
+one another. Use --profile NAME for one RC file or --current to use an RC file
+already sourced by the calling shell.
+
+RC file lookup:
+  $CCTL_CONFIG_DIR/NAME.sh (when CCTL_CONFIG_DIR is set)
+  ~/.config/cctl/NAME.sh
+  NAME.sh beside the cctl script
 EOF_HELP
     return 0
   fi
   command -v openstack >/dev/null 2>&1 || die "openstack CLI is required. Try: pip install python-openstackclient"
-  echo -e "[96m==> Active Chameleon Region: ${OS_REGION_NAME:-Unknown}[0m"
-  openstack server list "$@"
+
+  local selection="all"
+  local openstack_args=()
+  while (($#)); do
+    case "$1" in
+      --profile)
+        selection="$(option_value "$1" "${2-}")"
+        shift 2
+        ;;
+      --current)
+        selection="current"
+        shift
+        ;;
+      --)
+        shift
+        openstack_args+=("$@")
+        break
+        ;;
+      *)
+        openstack_args+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  if [[ "$selection" == "current" ]]; then
+    list_instances_from_current_env "${openstack_args[@]}"
+    return
+  fi
+
+  local profiles=()
+  if [[ "$selection" == "all" ]]; then
+    profiles=(tacc uc)
+  else
+    profiles=("$selection")
+  fi
+
+  local profile rc_file
+  local found=0
+  local failed=0
+  for profile in "${profiles[@]}"; do
+    if ! rc_file="$(profile_rc_path "$profile")"; then
+      if [[ "$selection" != "all" ]]; then
+        die "profile '$profile' was not found (expected $profile.sh)"
+      fi
+      continue
+    fi
+
+    if ((found)); then
+      printf '\n'
+    fi
+    found=1
+    if ! list_instances_from_rc "$profile" "$rc_file" "${openstack_args[@]}"; then
+      info "failed to list instances for profile '$profile'"
+      failed=1
+    fi
+  done
+
+  if ((!found)); then
+    if [[ -n "${OS_AUTH_URL:-}" ]]; then
+      list_instances_from_current_env "${openstack_args[@]}"
+      return
+    fi
+    die "no profiles found; add tacc.sh and uc.sh beside cctl or under ~/.config/cctl"
+  fi
+
+  return "$failed"
 }
 
 # Launch a new Chameleon Cloud (OpenStack) instance
