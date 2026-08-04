@@ -40,7 +40,7 @@ SSH Commands:
 OpenStack Commands (Requires OpenStack RC):
   instances                   List instances across TACC and UC profiles
   launch                      Launch a new instance
-  leases                      List Chameleon Cloud leases (colorized by expiration)
+  leases                      List leases across TACC and UC
   renew                       Renew a Chameleon Cloud lease
 
 Examples:
@@ -971,12 +971,13 @@ profile_rc_path() {
   fi
 }
 
-# Query one profile in a subshell so its OS_* variables cannot overwrite another
-# profile or leak back into the caller's environment.
-list_instances_from_rc() (
+# Run a callback with one profile in a subshell so its OS_* variables cannot
+# overwrite another profile or leak back into the caller's environment.
+run_openstack_from_rc() (
   local profile="$1"
   local rc_file="$2"
-  shift 2
+  local callback="$3"
+  shift 3
 
   set +u
   # shellcheck disable=SC1090
@@ -984,15 +985,67 @@ list_instances_from_rc() (
   set -u
 
   [[ -n "${OS_AUTH_URL:-}" ]] || die "$rc_file did not set OS_AUTH_URL"
-  printf '\033[96m==> Profile: %s | Chameleon Region: %s\033[0m\n' \
-    "$profile" "${OS_REGION_NAME:-Unknown}"
-  openstack server list "$@"
+  "$callback" "$profile" "$@"
 )
 
-list_instances_from_current_env() {
-  [[ -n "${OS_AUTH_URL:-}" ]] || die "no OpenStack environment is active; source an RC file or configure cctl profiles"
-  printf '\033[96m==> Profile: current | Chameleon Region: %s\033[0m\n' \
-    "${OS_REGION_NAME:-Unknown}"
+# Run a read-only OpenStack callback for the selected profile or all default
+# profiles. If no profile files exist, fall back to an already sourced RC.
+run_openstack_profiles() {
+  local selection="$1"
+  local action="$2"
+  local callback="$3"
+  shift 3
+
+  if [[ "$selection" == "current" ]]; then
+    [[ -n "${OS_AUTH_URL:-}" ]] || die "no OpenStack environment is active; source an RC file or configure cctl profiles"
+    "$callback" "current" "$@"
+    return
+  fi
+
+  local profiles=()
+  if [[ "$selection" == "all" ]]; then
+    profiles=(tacc uc)
+  else
+    profiles=("$selection")
+  fi
+
+  local profile rc_file
+  local found=0
+  local failed=0
+  for profile in "${profiles[@]}"; do
+    if ! rc_file="$(profile_rc_path "$profile")"; then
+      if [[ "$selection" != "all" ]]; then
+        die "profile '$profile' was not found (expected $profile.sh)"
+      fi
+      continue
+    fi
+
+    if ((found)); then
+      printf '\n'
+    fi
+    found=1
+    if ! run_openstack_from_rc "$profile" "$rc_file" "$callback" "$@"; then
+      info "failed to $action for profile '$profile'"
+      failed=1
+    fi
+  done
+
+  if ((!found)); then
+    if [[ -n "${OS_AUTH_URL:-}" ]]; then
+      "$callback" "current" "$@"
+      return
+    fi
+    die "no profiles found; add tacc.sh and uc.sh beside cctl or under ~/.config/cctl"
+  fi
+
+  return "$failed"
+}
+
+list_instances_for_active_profile() {
+  local profile="$1"
+  shift
+  printf '\033[96m==> Profile: %s | Chameleon Region: %s\033[0m\n' \
+    "$profile" "${OS_REGION_NAME:-Unknown}"
   openstack server list "$@"
 }
 
@@ -1041,48 +1094,8 @@ EOF_HELP
     esac
   done
 
-  if [[ "$selection" == "current" ]]; then
-    list_instances_from_current_env "${openstack_args[@]}"
-    return
-  fi
-
-  local profiles=()
-  if [[ "$selection" == "all" ]]; then
-    profiles=(tacc uc)
-  else
-    profiles=("$selection")
-  fi
-
-  local profile rc_file
-  local found=0
-  local failed=0
-  for profile in "${profiles[@]}"; do
-    if ! rc_file="$(profile_rc_path "$profile")"; then
-      if [[ "$selection" != "all" ]]; then
-        die "profile '$profile' was not found (expected $profile.sh)"
-      fi
-      continue
-    fi
-
-    if ((found)); then
-      printf '\n'
-    fi
-    found=1
-    if ! list_instances_from_rc "$profile" "$rc_file" "${openstack_args[@]}"; then
-      info "failed to list instances for profile '$profile'"
-      failed=1
-    fi
-  done
-
-  if ((!found)); then
-    if [[ -n "${OS_AUTH_URL:-}" ]]; then
-      list_instances_from_current_env "${openstack_args[@]}"
-      return
-    fi
-    die "no profiles found; add tacc.sh and uc.sh beside cctl or under ~/.config/cctl"
-  fi
-
-  return "$failed"
+  run_openstack_profiles "$selection" "list instances" \
+    list_instances_for_active_profile "${openstack_args[@]}"
 }
 
 # Launch a new Chameleon Cloud (OpenStack) instance
@@ -1103,28 +1116,58 @@ EOF_HELP
   openstack server create "$@"
 }
 
-# List Chameleon Cloud leases (reservations) with color coding for expiration
-cmd_leases() {
-  if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-    cat <<'EOF_HELP'
-Usage:
-  ./cctl leases
+# Find an OpenStack CLI that includes the Blazar reservation plugin.
+find_blazar_openstack() {
+  local primary=""
+  primary="$(command -v openstack 2>/dev/null || true)"
 
-Lists OpenStack Blazar leases, colored red if expired and green if active.
-EOF_HELP
+  if [[ -n "${CCTL_OPENSTACK_BIN:-}" ]]; then
+    [[ -x "$CCTL_OPENSTACK_BIN" ]] || die "CCTL_OPENSTACK_BIN is not executable: $CCTL_OPENSTACK_BIN"
+    if "$CCTL_OPENSTACK_BIN" reservation lease list --help >/dev/null 2>&1; then
+      printf '%s\n' "$CCTL_OPENSTACK_BIN"
+      return 0
+    fi
+    die "CCTL_OPENSTACK_BIN does not include the Blazar reservation plugin: $CCTL_OPENSTACK_BIN"
+  fi
+
+  if [[ -n "$primary" ]] && "$primary" reservation lease list --help >/dev/null 2>&1; then
+    printf '%s\n' "$primary"
     return 0
   fi
-  command -v openstack >/dev/null 2>&1 || die "openstack CLI is required."
-  
-  python3 - <<'PY'
-import json, subprocess, datetime, sys, os
-region = os.environ.get("OS_REGION_NAME", "Unknown")
-print(f"\033[96m==> Active Chameleon Region: {region}\033[0m")
+
+  local user_openstack=""
+  if [[ -n "${HOME:-}" ]]; then
+    user_openstack="$HOME/.local/bin/openstack"
+  fi
+  if [[ -n "$user_openstack" && "$user_openstack" != "$primary" && -x "$user_openstack" ]] && \
+      "$user_openstack" reservation lease list --help >/dev/null 2>&1; then
+    printf '%s\n' "$user_openstack"
+    return 0
+  fi
+
+  die "OpenStack Blazar plugin is required. Install it with: uv tool install python-openstackclient --with python-blazarclient --force"
+}
+
+# List leases for the active OpenStack environment with expiration coloring.
+list_leases_for_active_profile() {
+  local profile="$1"
+  local openstack_bin="$2"
+  printf '\033[96m==> Profile: %s | Chameleon Region: %s\033[0m\n' \
+    "$profile" "${OS_REGION_NAME:-Unknown}"
+
+  python3 - "$openstack_bin" <<'PY'
+import json, subprocess, datetime, sys
+
+openstack_bin = sys.argv[1]
 
 try:
-    res = subprocess.run(["openstack", "reservation", "lease", "list", "-f", "json"], capture_output=True, text=True, check=True)
+    res = subprocess.run([openstack_bin, "reservation", "lease", "list", "-f", "json"], capture_output=True, text=True, check=True)
 except subprocess.CalledProcessError as e:
-    print(e.stderr, file=sys.stderr)
+    message = (e.stderr or "").strip() or (e.stdout or "").strip()
+    if message:
+        print(message, file=sys.stderr)
+    else:
+        print(f"OpenStack lease query failed with exit code {e.returncode}.", file=sys.stderr)
     sys.exit(e.returncode)
 except FileNotFoundError:
     print("Error: openstack command not found.", file=sys.stderr)
@@ -1169,39 +1212,277 @@ print("")
 PY
 }
 
-# Renew a Chameleon Cloud lease
+# List Chameleon Cloud leases (reservations) across configured profiles.
+cmd_leases() {
+  if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    cat <<'EOF_HELP'
+Usage:
+  ./cctl leases [--profile all|NAME] [--current]
+
+By default, lists OpenStack Blazar leases from both tacc and uc profiles.
+Leases are colored red if expired and green if active. Use --profile NAME for
+one RC file or --current to use an RC file already sourced by the calling shell.
+EOF_HELP
+    return 0
+  fi
+  local openstack_bin
+  openstack_bin="$(find_blazar_openstack)"
+
+  local selection="all"
+  while (($#)); do
+    case "$1" in
+      --profile)
+        selection="$(option_value "$1" "${2-}")"
+        shift 2
+        ;;
+      --current)
+        selection="current"
+        shift
+        ;;
+      *)
+        die "unknown leases option: $1"
+        ;;
+    esac
+  done
+
+  run_openstack_profiles "$selection" "list leases" \
+    list_leases_for_active_profile "$openstack_bin"
+}
+
+# Return success when an exact lease name or ID exists in one profile. A query
+# failure is distinct from "not found" so auto-detection never writes after an
+# incomplete cross-profile search.
+lease_exists_from_rc() (
+  local profile="$1"
+  local rc_file="$2"
+  local openstack_bin="$3"
+  local lease_name="$4"
+
+  set +u
+  # shellcheck disable=SC1090
+  source "$rc_file"
+  set -u
+
+  if [[ -z "${OS_AUTH_URL:-}" ]]; then
+    echo "error: $rc_file did not set OS_AUTH_URL" >&2
+    return 2
+  fi
+
+  python3 - "$openstack_bin" "$lease_name" "$profile" <<'PY'
+import json
+import subprocess
+import sys
+
+openstack_bin, lease_name, profile = sys.argv[1:]
+
+try:
+    result = subprocess.run(
+        [openstack_bin, "reservation", "lease", "list", "-f", "json"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+except subprocess.CalledProcessError as exc:
+    message = (exc.stderr or "").strip() or (exc.stdout or "").strip()
+    print(message or f"Lease lookup failed for profile {profile}.", file=sys.stderr)
+    sys.exit(2)
+
+try:
+    leases = json.loads(result.stdout)
+except json.JSONDecodeError:
+    print(f"Could not parse the lease list for profile {profile}.", file=sys.stderr)
+    sys.exit(2)
+
+def value(item, wanted):
+    for key, item_value in item.items():
+        if key.lower() == wanted:
+            return str(item_value)
+    return ""
+
+matches = [
+    lease for lease in leases
+    if value(lease, "name") == lease_name or value(lease, "id") == lease_name
+]
+
+if len(matches) == 1:
+    sys.exit(0)
+if not matches:
+    sys.exit(1)
+
+print(f"Lease '{lease_name}' appears more than once in profile {profile}.", file=sys.stderr)
+sys.exit(3)
+PY
+)
+
+resolve_lease_profile() {
+  local lease_name="$1"
+  local openstack_bin="$2"
+  local profile rc_file status
+  local found=0
+  local matches=()
+  local missing=()
+
+  for profile in tacc uc; do
+    if ! rc_file="$(profile_rc_path "$profile")"; then
+      missing+=("$profile")
+      continue
+    fi
+    found=1
+
+    if lease_exists_from_rc "$profile" "$rc_file" "$openstack_bin" "$lease_name"; then
+      matches+=("$profile")
+    else
+      status=$?
+      if [[ "$status" -ne 1 ]]; then
+        info "could not safely locate lease '$lease_name' across all profiles"
+        return "$status"
+      fi
+    fi
+  done
+
+  if ((!found)); then
+    if [[ -n "${OS_AUTH_URL:-}" ]]; then
+      printf '%s\n' "current"
+      return 0
+    fi
+    die "no profiles found; add tacc.sh and uc.sh under ~/.config/cctl"
+  fi
+
+  if ((${#missing[@]})); then
+    die "cannot auto-detect a lease while profiles are missing (${missing[*]}); restore them or use --profile NAME"
+  fi
+
+  case "${#matches[@]}" in
+    0)
+      die "lease '$lease_name' was not found in the tacc or uc profile"
+      ;;
+    1)
+      printf '%s\n' "${matches[0]}"
+      ;;
+    *)
+      die "lease '$lease_name' exists in multiple profiles (${matches[*]}); rerun with --profile tacc or --profile uc"
+      ;;
+  esac
+}
+
+renew_lease_for_active_profile() {
+  local profile="$1"
+  local openstack_bin="$2"
+  local lease_name="$3"
+  local add_days="$4"
+  shift 4
+
+  printf '\033[96m==> Profile: %s | Chameleon Region: %s\033[0m\n' \
+    "$profile" "${OS_REGION_NAME:-Unknown}"
+
+  if [[ -z "$add_days" ]]; then
+    "$openstack_bin" reservation lease set "$lease_name" "$@"
+    return
+  fi
+
+  python3 - "$openstack_bin" "$lease_name" "$add_days" <<'PY'
+import datetime
+import json
+import subprocess
+import sys
+
+openstack_bin, lease_name, add_days_text = sys.argv[1:]
+add_days = int(add_days_text)
+
+try:
+    result = subprocess.run(
+        [openstack_bin, "reservation", "lease", "show", lease_name, "-f", "json"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+except subprocess.CalledProcessError as exc:
+    message = (exc.stderr or "").strip() or (exc.stdout or "").strip()
+    print(message or f"Failed to fetch lease '{lease_name}'.", file=sys.stderr)
+    sys.exit(exc.returncode)
+
+try:
+    lease = json.loads(result.stdout)
+except json.JSONDecodeError:
+    print(f"Could not parse lease details for '{lease_name}'.", file=sys.stderr)
+    sys.exit(1)
+
+end_date_text = next(
+    (str(value) for key, value in lease.items() if key.lower() == "end_date"),
+    "",
+)
+if not end_date_text:
+    print(f"Could not determine the end date for '{lease_name}'.", file=sys.stderr)
+    sys.exit(1)
+
+normalized_end = end_date_text.split(".")[0].replace(" ", "T")
+current_end = datetime.datetime.strptime(normalized_end, "%Y-%m-%dT%H:%M:%S")
+new_end = current_end + datetime.timedelta(days=add_days)
+new_end_text = new_end.strftime("%Y-%m-%d %H:%M")
+
+print(f"==> Extending lease '{lease_name}' by {add_days} days (new end: {new_end_text})", flush=True)
+
+try:
+    subprocess.run(
+        [openstack_bin, "reservation", "lease", "set", lease_name, "--end-date", new_end_text],
+        check=True,
+    )
+except subprocess.CalledProcessError as exc:
+    print("Failed to extend the lease. Check Chameleon's renewal window and duration limits.", file=sys.stderr)
+    sys.exit(exc.returncode)
+
+print("==> Lease successfully extended.")
+PY
+}
+
+# Renew a Chameleon Cloud lease, auto-detecting its profile when unambiguous.
 cmd_renew() {
   if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     cat <<'EOF_HELP'
 Usage:
-  ./cctl renew <lease_name_or_id> [options]
+  ./cctl renew <lease_name_or_id> [--profile NAME | --current] [options]
 
-Renews an existing Chameleon Cloud lease (reservation).
+By default, finds an exact lease name or ID across tacc and uc profiles and
+renews it only when exactly one profile matches. If both profiles contain the
+same name, select one explicitly.
+
+The target is a Blazar lease name shown by `cctl leases`, not a Nova server name
+shown by `cctl instances`.
+
 Options:
+  --profile NAME                  Use one configured profile (tacc or uc)
+  --current                       Use the OpenStack environment already sourced
   --end-date "YYYY-MM-DD HH:MM"   Set an absolute new end date
-  --add-days N                    Extend the lease by N days from its current end date
+  --add-days N                    Extend from the current end date by N days
 
 Examples:
   ./cctl renew my-lease --add-days 7
-  ./cctl renew my-lease --end-date "2024-12-31 23:59"
+  ./cctl renew my-lease --profile tacc --add-days 7
+  ./cctl renew my-lease --profile uc --end-date "2026-08-11 23:59"
 EOF_HELP
     return 0
   fi
-  command -v openstack >/dev/null 2>&1 || die "openstack CLI is required."
-  
-  if [[ "$#" -lt 1 ]]; then
-    die "missing lease name or id. Try: ./cctl renew -h"
-  fi
-  
+
+  (($#)) || die "missing lease name or id. Try: ./cctl renew --help"
+
   local lease_name="$1"
   shift
-  
+
+  local selection="auto"
   local add_days=""
   local other_args=()
   while (($#)); do
     case "$1" in
+      --profile)
+        selection="$(option_value "$1" "${2-}")"
+        shift 2
+        ;;
+      --current)
+        selection="current"
+        shift
+        ;;
       --add-days)
-        add_days="$2"
+        add_days="$(option_value "$1" "${2-}")"
         shift 2
         ;;
       *)
@@ -1212,45 +1493,34 @@ EOF_HELP
   done
 
   if [[ -n "$add_days" ]]; then
-    python3 - <<PY
-import sys, json, subprocess, datetime, os
-region = os.environ.get("OS_REGION_NAME", "Unknown")
-print(f"\033[96m==> Active Chameleon Region: {region}\033[0m")
-
-lease_name = "${lease_name}"
-add_days = int("${add_days}")
-
-try:
-    res = subprocess.run(["openstack", "reservation", "lease", "show", lease_name, "-f", "json"], capture_output=True, text=True, check=True)
-except subprocess.CalledProcessError as e:
-    print(f"Failed to fetch lease details.", file=sys.stderr)
-    sys.exit(1)
-
-lease = json.loads(res.stdout)
-end_date_str = lease.get("end_date")
-if not end_date_str:
-    print("Could not determine current end date.", file=sys.stderr)
-    sys.exit(1)
-
-# Handle different formats (YYYY-MM-DDTHH:MM:SS or with microseconds)
-end_date_str = end_date_str.split(".")[0].replace(" ", "T")
-current_end = datetime.datetime.strptime(end_date_str, "%Y-%m-%dT%H:%M:%S")
-new_end = current_end + datetime.timedelta(days=add_days)
-new_end_str = new_end.strftime("%Y-%m-%d %H:%M")
-
-print(f"==> Extending lease '{lease_name}' by {add_days} days (New End Date: {new_end_str})")
-
-try:
-    subprocess.run(["openstack", "reservation", "lease", "set", lease_name, "--end-date", new_end_str], check=True)
-    print("==> Lease successfully extended.")
-except subprocess.CalledProcessError:
-    print("==> Failed to extend lease. Note: Chameleon limits max lease duration (usually 7 days at a time).", file=sys.stderr)
-    sys.exit(1)
-PY
-  else
-    echo -e "[96m==> Active Chameleon Region: ${OS_REGION_NAME:-Unknown}[0m"
-    openstack reservation lease set "$lease_name" "${other_args[@]}"
+    [[ "$add_days" =~ ^[1-9][0-9]*$ ]] || die "--add-days must be a positive integer"
+    ((${#other_args[@]} == 0)) || die "--add-days cannot be combined with other lease-set options"
   fi
+
+  [[ "$selection" != "all" ]] || die "renew requires one profile; use --profile tacc or --profile uc"
+
+  local openstack_bin
+  openstack_bin="$(find_blazar_openstack)"
+
+  local resolved_profile rc_file
+  if [[ "$selection" == "auto" ]]; then
+    resolved_profile="$(resolve_lease_profile "$lease_name" "$openstack_bin")"
+  else
+    resolved_profile="$selection"
+  fi
+
+  if [[ "$resolved_profile" == "current" ]]; then
+    [[ -n "${OS_AUTH_URL:-}" ]] || die "no OpenStack environment is active; source an RC file or omit --current"
+    renew_lease_for_active_profile "current" "$openstack_bin" \
+      "$lease_name" "$add_days" "${other_args[@]}"
+    return
+  fi
+
+  rc_file="$(profile_rc_path "$resolved_profile")" || \
+    die "profile '$resolved_profile' was not found (expected $resolved_profile.sh)"
+  run_openstack_from_rc "$resolved_profile" "$rc_file" \
+    renew_lease_for_active_profile "$openstack_bin" "$lease_name" \
+    "$add_days" "${other_args[@]}"
 }
 
 parse_global_options() {

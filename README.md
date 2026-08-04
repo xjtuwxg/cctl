@@ -75,7 +75,7 @@ Each number maps the same remote port to the same local port. The tunnel stays i
 | --- | --- | --- |
 | Cloud | `instances` | List instances across TACC and UC |
 | Cloud | `launch` | Launch an OpenStack instance |
-| Cloud | `leases` | List Blazar leases |
+| Cloud | `leases` | List Blazar leases across TACC and UC |
 | Cloud | `renew` | Extend or update a lease |
 | SSH | `adduser` | Create/configure a user and SSH key |
 | SSH | `addkey` | Add a public key to an existing user |
