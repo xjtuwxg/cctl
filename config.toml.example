@@ -1,0 +1,9 @@
+# Optional defaults for cctl. Copy to ~/.config/cctl/config.toml
+[defaults]
+site = "uc"                # used when a command needs exactly one site and -s is omitted
+image = "CC-Ubuntu24.04"   # default image for `servers create` / `up`
+key_name = "my-key"        # default keypair name (must exist on the site: `cctl keys`)
+network = "sharednet1"
+flavor = "baremetal"
+ssh_user = "cc"
+lease_days = 1             # default --duration for `leases create` / `up`

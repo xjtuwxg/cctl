@@ -1,4 +1,12 @@
 .history/
 tacc.sh
 uc.sh
+kvm.sh
 *openrc*.sh
+config.toml
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.venv/
